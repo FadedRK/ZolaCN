@@ -14,8 +14,9 @@ jobs:
         uses: waruhachi/theos-action@v2.4.6
         with:
           theos-src: waruhachi/theos
+          theos-branch: master
           sdks-src: waruhachi/sdks
-          scheme: rootless
+          sdks-branch: master
       - name: Upload rootless package
         uses: actions/upload-artifact@v4
         with:
@@ -30,7 +31,9 @@ jobs:
         uses: waruhachi/theos-action@v2.4.6
         with:
           theos-src: waruhachi/theos
+          theos-branch: master
           sdks-src: waruhachi/sdks
+          sdks-branch: master
       - name: Upload rootful package
         uses: actions/upload-artifact@v4
         with:
