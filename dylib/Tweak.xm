@@ -1,6 +1,5 @@
 #import <Foundation/Foundation.h>
-#import <objc/runtime.h>
-#import <objc/message.h>
+#import <UIKit/UIKit.h>
 
 extern const unsigned char ZLCNTranslationsZlib[];
 extern const unsigned long ZLCNTranslationsZlibLength;
@@ -13,138 +12,127 @@ static void ZLCNLoadTranslations(void) {
     NSError *error = nil;
     NSData *plistData = [compressed decompressedDataUsingAlgorithm:NSDataCompressionAlgorithmZlib error:&error];
     if (!plistData.length) {
-        NSLog(@"[ZolaCN] Failed to decompress embedded translations: %@", error);
+        NSLog(@"[ZolaCN] translation decompression failed: %@", error);
         ZLCNTranslations = @{};
         return;
     }
 
-    id object = [NSPropertyListSerialization propertyListWithData:plistData options:NSPropertyListImmutable format:nil error:&error];
+    id object = [NSPropertyListSerialization propertyListWithData:plistData
+                                                            options:NSPropertyListImmutable
+                                                             format:nil
+                                                              error:&error];
     if ([object isKindOfClass:[NSDictionary class]]) {
         ZLCNTranslations = object;
-        NSLog(@"[ZolaCN] Loaded %lu embedded translations", (unsigned long)ZLCNTranslations.count);
+        NSLog(@"[ZolaCN] loaded %lu translations", (unsigned long)ZLCNTranslations.count);
     } else {
         ZLCNTranslations = @{};
-        NSLog(@"[ZolaCN] Invalid embedded translation plist: %@", error);
+        NSLog(@"[ZolaCN] invalid translation plist: %@", error);
     }
 }
 
-static NSString *ZLCNTranslate(NSString *key, NSString *value, NSString *result) {
-    if (!ZLCNTranslations.count) return result;
+static NSString *ZLCNTranslateText(NSString *text) {
+    if (![text isKindOfClass:[NSString class]] || text.length == 0 || ZLCNTranslations.count == 0) {
+        return text;
+    }
 
-    NSString *translated = nil;
+    // The translation table is Vietnamese -> Chinese. First try an exact match.
+    NSString *translated = ZLCNTranslations[text];
 
-    // Zalo commonly returns the Vietnamese text as the localized result.
-    if (result.length) translated = ZLCNTranslations[result];
-    if (!translated && value.length) translated = ZLCNTranslations[value];
-    if (!translated && key.length) translated = ZLCNTranslations[key];
+    // Also tolerate leading/trailing whitespace/newlines used by some UI labels.
+    if (!translated) {
+        NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (![trimmed isEqualToString:text]) {
+            translated = ZLCNTranslations[trimmed];
+        }
+    }
 
-    if (translated.length && ![translated isEqualToString:result]) {
+    if (translated.length && ![translated isEqualToString:text]) {
         ZLCNHitCount++;
-        if (ZLCNHitCount <= 30) {
-            NSLog(@"[ZolaCN] %@ -> %@", result ?: key ?: @"", translated);
+        if (ZLCNHitCount <= 50) {
+            NSLog(@"[ZolaCN] UI: %@ -> %@", text, translated);
         }
         return translated;
     }
-    return result;
+
+    return text;
 }
 
 %hook NSBundle
 
 - (NSString *)localizedStringForKey:(NSString *)key value:(NSString *)value table:(NSString *)table {
     NSString *result = %orig;
-    return ZLCNTranslate(key, value, result);
+    return ZLCNTranslateText(result);
 }
 
 %end
 
-// Zalo also has its own localization manager.  Its selectors are present in
-// the main executable, so hook the concrete classes at runtime instead of
-// relying only on NSBundle.
-static NSString *ZLCNOriginal2(id self, SEL alias, NSString *key, NSString *bundleAndTableName) {
-    NSString *(*fn)(id, SEL, NSString *, NSString *) = (void *)[self methodForSelector:alias];
-    NSString *result = fn(self, alias, key, bundleAndTableName);
-    return ZLCNTranslate(key, bundleAndTableName, result);
+// Zalo uses its own localization layer for a large part of the UI. Rather than
+// guessing its private Swift implementation, translate strings at the UIKit
+// presentation boundary. This also covers strings produced by the custom
+// localization manager and provides a reliable runtime path for the dylib.
+%hook UILabel
+
+- (void)setText:(NSString *)text {
+    %orig(ZLCNTranslateText(text));
 }
 
-static NSString *ZLCNOriginal3(id self, SEL alias, NSString *key, NSString *table, NSString *bundleName) {
-    NSString *(*fn)(id, SEL, NSString *, NSString *, NSString *) = (void *)[self methodForSelector:alias];
-    NSString *result = fn(self, alias, key, table, bundleName);
-    return ZLCNTranslate(key, table, result);
+%end
+
+%hook UIButton
+
+- (void)setTitle:(NSString *)title forState:(UIControlState)state {
+    %orig(ZLCNTranslateText(title), state);
 }
 
-static NSString *ZLCNHook2(id self, SEL _cmd, NSString *key, NSString *bundleAndTableName) {
-    SEL alias = NSSelectorFromString(@"zlc_original_localizedStringForKey_bundleAndTableName_");
-    return ZLCNOriginal2(self, alias, key, bundleAndTableName);
+%end
+
+%hook UIBarButtonItem
+
+- (void)setTitle:(NSString *)title {
+    %orig(ZLCNTranslateText(title));
 }
 
-static NSString *ZLCNHook3(id self, SEL _cmd, NSString *key, NSString *table, NSString *bundleName) {
-    SEL alias = NSSelectorFromString(@"zlc_original_localizedStringForKey_table_bundleName_");
-    return ZLCNOriginal3(self, alias, key, table, bundleName);
+%end
+
+%hook UINavigationItem
+
+- (void)setTitle:(NSString *)title {
+    %orig(ZLCNTranslateText(title));
 }
 
-static void ZLCNHookCustomLocalizationMethods(void) {
-    SEL sel2 = NSSelectorFromString(@"localizedStringForKey:bundleAndTableName:");
-    SEL alias2 = NSSelectorFromString(@"zlc_original_localizedStringForKey_bundleAndTableName_");
-    SEL sel3 = NSSelectorFromString(@"localizedStringForKey:table:bundleName:");
-    SEL alias3 = NSSelectorFromString(@"zlc_original_localizedStringForKey_table_bundleName_");
+%end
 
-    unsigned int classCount = 0;
-    Class *classes = objc_copyClassList(&classCount);
-    NSUInteger hooked2 = 0;
-    NSUInteger hooked3 = 0;
+%hook UITabBarItem
 
-    for (unsigned int i = 0; i < classCount; i++) {
-        Class cls = classes[i];
-        if (cls == [NSBundle class]) continue;
-
-        unsigned int methodCount = 0;
-        Method *methods = class_copyMethodList(cls, &methodCount);
-        BOOL has2 = NO;
-        BOOL has3 = NO;
-        const char *types2 = NULL;
-        const char *types3 = NULL;
-        IMP imp2 = NULL;
-        IMP imp3 = NULL;
-
-        for (unsigned int j = 0; j < methodCount; j++) {
-            Method m = methods[j];
-            SEL s = method_getName(m);
-            if (s == sel2) {
-                has2 = YES;
-                types2 = method_getTypeEncoding(m);
-                imp2 = method_getImplementation(m);
-            } else if (s == sel3) {
-                has3 = YES;
-                types3 = method_getTypeEncoding(m);
-                imp3 = method_getImplementation(m);
-            }
-        }
-        free(methods);
-
-        if (has2 && imp2) {
-            if (!class_getInstanceMethod(cls, alias2)) {
-                class_addMethod(cls, alias2, imp2, types2);
-            }
-            Method target = class_getInstanceMethod(cls, sel2);
-            method_setImplementation(target, (IMP)ZLCNHook2);
-            hooked2++;
-            NSLog(@"[ZolaCN] Hooked %@ %@", NSStringFromClass(cls), NSStringFromSelector(sel2));
-        }
-
-        if (has3 && imp3) {
-            if (!class_getInstanceMethod(cls, alias3)) {
-                class_addMethod(cls, alias3, imp3, types3);
-            }
-            Method target = class_getInstanceMethod(cls, sel3);
-            method_setImplementation(target, (IMP)ZLCNHook3);
-            hooked3++;
-            NSLog(@"[ZolaCN] Hooked %@ %@", NSStringFromClass(cls), NSStringFromSelector(sel3));
-        }
-    }
-    free(classes);
-
-    NSLog(@"[ZolaCN] Custom localization hooks: %lu / %lu", (unsigned long)hooked2, (unsigned long)hooked3);
+- (void)setTitle:(NSString *)title {
+    %orig(ZLCNTranslateText(title));
 }
+
+%end
+
+%hook UISearchBar
+
+- (void)setPlaceholder:(NSString *)placeholder {
+    %orig(ZLCNTranslateText(placeholder));
+}
+
+%end
+
+%hook UITextField
+
+- (void)setPlaceholder:(NSString *)placeholder {
+    %orig(ZLCNTranslateText(placeholder));
+}
+
+%end
+
+%hook UISegmentedControl
+
+- (void)setTitle:(NSString *)title forSegmentAtIndex:(NSUInteger)segment {
+    %orig(ZLCNTranslateText(title), segment);
+}
+
+%end
 
 %ctor {
     @autoreleasepool {
@@ -153,7 +141,6 @@ static void ZLCNHookCustomLocalizationMethods(void) {
         if (![bundleID isEqualToString:@"vn.com.vng.zingalo"]) return;
 
         ZLCNLoadTranslations();
-        NSLog(@"[ZolaCN] Loaded into Zalo %@", bundleID);
-        ZLCNHookCustomLocalizationMethods();
+        NSLog(@"[ZolaCN] loaded into Zalo; UIKit translation hooks active");
     }
 }
