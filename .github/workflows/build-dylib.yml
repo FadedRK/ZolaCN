@@ -48,3 +48,5 @@ jobs:
         with:
           name: ZolaCN-dylib
           path: dist/ZolaCN.dylib
+
+      # Diagnostic build trigger
