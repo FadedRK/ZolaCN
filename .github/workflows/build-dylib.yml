@@ -1,0 +1,44 @@
+name: Build ZolaCN Dylib
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'dylib/**'
+      - 'Translations.plist'
+      - '.github/workflows/build-dylib.yml'
+
+jobs:
+  build-dylib:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Theos
+        uses: waruhachi/theos-action@v2.4.6
+        with:
+          theos-src: waruhachi/theos
+          theos-branch: main
+          sdks-src: waruhachi/sdks
+          sdks-branch: main
+
+      - name: Embed translations into dylib
+        run: python3 dylib/build_embed.py
+
+      - name: Build dylib
+        run: |
+          make -C dylib clean
+          make -C dylib package FINALPACKAGE=1
+          mkdir -p dist
+          DYLIB=$(find dylib/.theos -type f -name 'ZolaCN.dylib' | head -n 1)
+          test -n "$DYLIB"
+          cp "$DYLIB" dist/ZolaCN.dylib
+          file dist/ZolaCN.dylib
+          ls -lh dist/ZolaCN.dylib
+
+      - name: Upload dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZolaCN-dylib
+          path: dist/ZolaCN.dylib
