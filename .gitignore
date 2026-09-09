@@ -1,0 +1,7 @@
+.theos/
+dist/
+packages/
+dylib/TranslationsData.m
+*.deb
+*.ipa
+.DS_Store
