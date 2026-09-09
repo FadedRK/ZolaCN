@@ -1,0 +1,9 @@
+Package: com.fadedrk.zolacn
+Name: ZolaCN
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: Runtime Chinese localization for Zalo iOS
+Maintainer: FadedRK
+Author: FadedRK
+Section: Tweaks
+Depends: mobilesubstrate
