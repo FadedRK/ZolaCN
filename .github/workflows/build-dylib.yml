@@ -26,16 +26,22 @@ jobs:
       - name: Embed translations into dylib
         run: python3 dylib/build_embed.py
 
-      - name: Build dylib
+      - name: Build dylib only
         run: |
           make -C dylib clean
-          make -C dylib package FINALPACKAGE=1
+          make -C dylib
           mkdir -p dist
           DYLIB=$(find dylib/.theos -type f -name 'ZolaCN.dylib' | head -n 1)
           test -n "$DYLIB"
           cp "$DYLIB" dist/ZolaCN.dylib
           file dist/ZolaCN.dylib
           ls -lh dist/ZolaCN.dylib
+
+      - name: Verify dylib
+        run: |
+          test -f dist/ZolaCN.dylib
+          file dist/ZolaCN.dylib
+          otool -hv dist/ZolaCN.dylib
 
       - name: Upload dylib
         uses: actions/upload-artifact@v4
