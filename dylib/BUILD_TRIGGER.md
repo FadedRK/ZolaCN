@@ -1,0 +1,1 @@
+Build trigger for standalone dylib workflow.
