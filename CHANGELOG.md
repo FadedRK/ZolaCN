@@ -18,4 +18,5 @@ First public release.
 
 ### Notes
 - This release is dylib-only. No Debian package is required.
-- The translation coverage depends on the bundled translation table and the Zalo UI paths used by the current app version.
+- The current release has been verified on the user's Zalo installation with TrollFools injection.
+- The translation coverage depends on the bundled table and the UI paths used by the current Zalo build.
