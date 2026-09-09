@@ -1,0 +1,38 @@
+name: Build ZolaCN
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build-rootless:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build rootless
+        uses: waruhachi/theos-action@v2.4.6
+        with:
+          theos-src: waruhachi/theos
+          sdks-src: waruhachi/sdks
+          scheme: rootless
+      - name: Upload rootless package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZolaCN-rootless
+          path: packages/*.deb
+
+  build-rootful:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build rootful
+        uses: waruhachi/theos-action@v2.4.6
+        with:
+          theos-src: waruhachi/theos
+          sdks-src: waruhachi/sdks
+      - name: Upload rootful package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZolaCN-rootful
+          path: packages/*.deb
