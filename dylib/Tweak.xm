@@ -1,5 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <objc/runtime.h>
+#import <objc/message.h>
 
 extern const unsigned char ZLCNTranslationsZlib[];
 extern const unsigned long ZLCNTranslationsZlibLength;
@@ -35,10 +37,7 @@ static NSString *ZLCNTranslateText(NSString *text) {
         return text;
     }
 
-    // The translation table is Vietnamese -> Chinese. First try an exact match.
     NSString *translated = ZLCNTranslations[text];
-
-    // Also tolerate leading/trailing whitespace/newlines used by some UI labels.
     if (!translated) {
         NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         if (![trimmed isEqualToString:text]) {
@@ -57,90 +56,138 @@ static NSString *ZLCNTranslateText(NSString *text) {
     return text;
 }
 
-%hook NSBundle
+static void ZLCNSwizzleInstanceMethod(Class cls, SEL originalSEL, SEL aliasSEL, IMP replacementIMP) {
+    Method originalMethod = class_getInstanceMethod(cls, originalSEL);
+    if (!originalMethod) {
+        NSLog(@"[ZolaCN] method not found: %@ %@", NSStringFromClass(cls), NSStringFromSelector(originalSEL));
+        return;
+    }
 
-- (NSString *)localizedStringForKey:(NSString *)key value:(NSString *)value table:(NSString *)table {
-    NSString *result = %orig;
+    if (!class_getInstanceMethod(cls, aliasSEL)) {
+        const char *types = method_getTypeEncoding(originalMethod);
+        IMP originalIMP = method_getImplementation(originalMethod);
+        class_addMethod(cls, aliasSEL, originalIMP, types);
+    }
+
+    Method targetMethod = class_getInstanceMethod(cls, originalSEL);
+    method_setImplementation(targetMethod, replacementIMP);
+}
+
+static NSString *ZLCN_NSBundle_localizedString(id self, SEL _cmd, NSString *key, NSString *value, NSString *table) {
+    SEL aliasSEL = sel_registerName("zlc_original_localizedStringForKey:value:table:");
+    NSString *(*original)(id, SEL, NSString *, NSString *, NSString *) = (NSString *(*)(id, SEL, NSString *, NSString *, NSString *))[self methodForSelector:aliasSEL];
+    NSString *result = original(self, aliasSEL, key, value, table);
     return ZLCNTranslateText(result);
 }
 
-%end
-
-// Zalo uses its own localization layer for a large part of the UI. Rather than
-// guessing its private Swift implementation, translate strings at the UIKit
-// presentation boundary. This also covers strings produced by the custom
-// localization manager and provides a reliable runtime path for the dylib.
-%hook UILabel
-
-- (void)setText:(NSString *)text {
-    %orig(ZLCNTranslateText(text));
+static void ZLCN_UILabel_setText(UILabel *self, SEL _cmd, NSString *text) {
+    SEL aliasSEL = sel_registerName("zlc_original_setText:");
+    void (*original)(id, SEL, NSString *) = (void (*)(id, SEL, NSString *))[self methodForSelector:aliasSEL];
+    original(self, aliasSEL, ZLCNTranslateText(text));
 }
 
-%end
-
-%hook UIButton
-
-- (void)setTitle:(NSString *)title forState:(UIControlState)state {
-    %orig(ZLCNTranslateText(title), state);
+static void ZLCN_UIButton_setTitle(UIControl *self, SEL _cmd, NSString *title, UIControlState state) {
+    SEL aliasSEL = sel_registerName("zlc_original_setTitle:forState:");
+    void (*original)(id, SEL, NSString *, UIControlState) = (void (*)(id, SEL, NSString *, UIControlState))[self methodForSelector:aliasSEL];
+    original(self, aliasSEL, ZLCNTranslateText(title), state);
 }
 
-%end
-
-%hook UIBarButtonItem
-
-- (void)setTitle:(NSString *)title {
-    %orig(ZLCNTranslateText(title));
+static void ZLCN_UIBarButtonItem_setTitle(UIBarButtonItem *self, SEL _cmd, NSString *title) {
+    SEL aliasSEL = sel_registerName("zlc_original_setTitle:");
+    void (*original)(id, SEL, NSString *) = (void (*)(id, SEL, NSString *))[self methodForSelector:aliasSEL];
+    original(self, aliasSEL, ZLCNTranslateText(title));
 }
 
-%end
-
-%hook UINavigationItem
-
-- (void)setTitle:(NSString *)title {
-    %orig(ZLCNTranslateText(title));
+static void ZLCN_UINavigationItem_setTitle(UINavigationItem *self, SEL _cmd, NSString *title) {
+    SEL aliasSEL = sel_registerName("zlc_original_setTitle:");
+    void (*original)(id, SEL, NSString *) = (void (*)(id, SEL, NSString *))[self methodForSelector:aliasSEL];
+    original(self, aliasSEL, ZLCNTranslateText(title));
 }
 
-%end
-
-%hook UITabBarItem
-
-- (void)setTitle:(NSString *)title {
-    %orig(ZLCNTranslateText(title));
+static void ZLCN_UITabBarItem_setTitle(UITabBarItem *self, SEL _cmd, NSString *title) {
+    SEL aliasSEL = sel_registerName("zlc_original_setTitle:");
+    void (*original)(id, SEL, NSString *) = (void (*)(id, SEL, NSString *))[self methodForSelector:aliasSEL];
+    original(self, aliasSEL, ZLCNTranslateText(title));
 }
 
-%end
-
-%hook UISearchBar
-
-- (void)setPlaceholder:(NSString *)placeholder {
-    %orig(ZLCNTranslateText(placeholder));
+static void ZLCN_UISearchBar_setPlaceholder(UISearchBar *self, SEL _cmd, NSString *placeholder) {
+    SEL aliasSEL = sel_registerName("zlc_original_setPlaceholder:");
+    void (*original)(id, SEL, NSString *) = (void (*)(id, SEL, NSString *))[self methodForSelector:aliasSEL];
+    original(self, aliasSEL, ZLCNTranslateText(placeholder));
 }
 
-%end
-
-%hook UITextField
-
-- (void)setPlaceholder:(NSString *)placeholder {
-    %orig(ZLCNTranslateText(placeholder));
+static void ZLCN_UITextField_setPlaceholder(UITextField *self, SEL _cmd, NSString *placeholder) {
+    SEL aliasSEL = sel_registerName("zlc_original_setPlaceholder:");
+    void (*original)(id, SEL, NSString *) = (void (*)(id, SEL, NSString *))[self methodForSelector:aliasSEL];
+    original(self, aliasSEL, ZLCNTranslateText(placeholder));
 }
 
-%end
-
-%hook UISegmentedControl
-
-- (void)setTitle:(NSString *)title forSegmentAtIndex:(NSUInteger)segment {
-    %orig(ZLCNTranslateText(title), segment);
+static void ZLCN_UISegmentedControl_setTitle(UISegmentedControl *self, SEL _cmd, NSString *title, NSUInteger segment) {
+    SEL aliasSEL = sel_registerName("zlc_original_setTitle:forSegmentAtIndex:");
+    void (*original)(id, SEL, NSString *, NSUInteger) = (void (*)(id, SEL, NSString *, NSUInteger))[self methodForSelector:aliasSEL];
+    original(self, aliasSEL, ZLCNTranslateText(title), segment);
 }
 
-%end
+static void ZLCNInstallHooks(void) {
+    ZLCNSwizzleInstanceMethod([NSBundle class],
+                              @selector(localizedStringForKey:value:table:),
+                              sel_registerName("zlc_original_localizedStringForKey:value:table:"),
+                              (IMP)ZLCN_NSBundle_localizedString);
 
-%ctor {
+    ZLCNSwizzleInstanceMethod([UILabel class],
+                              @selector(setText:),
+                              sel_registerName("zlc_original_setText:"),
+                              (IMP)ZLCN_UILabel_setText);
+
+    ZLCNSwizzleInstanceMethod([UIButton class],
+                              @selector(setTitle:forState:),
+                              sel_registerName("zlc_original_setTitle:forState:"),
+                              (IMP)ZLCN_UIButton_setTitle);
+
+    ZLCNSwizzleInstanceMethod([UIBarButtonItem class],
+                              @selector(setTitle:),
+                              sel_registerName("zlc_original_setTitle:"),
+                              (IMP)ZLCN_UIBarButtonItem_setTitle);
+
+    ZLCNSwizzleInstanceMethod([UINavigationItem class],
+                              @selector(setTitle:),
+                              sel_registerName("zlc_original_setTitle:"),
+                              (IMP)ZLCN_UINavigationItem_setTitle);
+
+    ZLCNSwizzleInstanceMethod([UITabBarItem class],
+                              @selector(setTitle:),
+                              sel_registerName("zlc_original_setTitle:"),
+                              (IMP)ZLCN_UITabBarItem_setTitle);
+
+    ZLCNSwizzleInstanceMethod([UISearchBar class],
+                              @selector(setPlaceholder:),
+                              sel_registerName("zlc_original_setPlaceholder:"),
+                              (IMP)ZLCN_UISearchBar_setPlaceholder);
+
+    ZLCNSwizzleInstanceMethod([UITextField class],
+                              @selector(setPlaceholder:),
+                              sel_registerName("zlc_original_setPlaceholder:"),
+                              (IMP)ZLCN_UITextField_setPlaceholder);
+
+    ZLCNSwizzleInstanceMethod([UISegmentedControl class],
+                              @selector(setTitle:forSegmentAtIndex:),
+                              sel_registerName("zlc_original_setTitle:forSegmentAtIndex:"),
+                              (IMP)ZLCN_UISegmentedControl_setTitle);
+
+    NSLog(@"[ZolaCN] runtime hooks installed");
+}
+
+__attribute__((constructor))
+static void ZLCNInit(void) {
     @autoreleasepool {
         NSBundle *mainBundle = [NSBundle mainBundle];
         NSString *bundleID = [mainBundle bundleIdentifier];
-        if (![bundleID isEqualToString:@"vn.com.vng.zingalo"]) return;
+        if (![bundleID isEqualToString:@"vn.com.vng.zingalo"]) {
+            return;
+        }
 
         ZLCNLoadTranslations();
-        NSLog(@"[ZolaCN] loaded into Zalo; UIKit translation hooks active");
+        ZLCNInstallHooks();
+        NSLog(@"[ZolaCN] loaded into Zalo %@", bundleID);
     }
 }
