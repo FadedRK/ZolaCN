@@ -10,13 +10,22 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build rootless
+
+      - name: Setup Theos
         uses: waruhachi/theos-action@v2.4.6
         with:
           theos-src: waruhachi/theos
-          theos-branch: master
+          theos-branch: main
           sdks-src: waruhachi/sdks
-          sdks-branch: master
+          sdks-branch: main
+
+      - name: Build rootless package
+        run: |
+          make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+
+      - name: Show package
+        run: ls -lh packages/
+
       - name: Upload rootless package
         uses: actions/upload-artifact@v4
         with:
@@ -27,13 +36,22 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build rootful
+
+      - name: Setup Theos
         uses: waruhachi/theos-action@v2.4.6
         with:
           theos-src: waruhachi/theos
-          theos-branch: master
+          theos-branch: main
           sdks-src: waruhachi/sdks
-          sdks-branch: master
+          sdks-branch: main
+
+      - name: Build rootful package
+        run: |
+          make clean package FINALPACKAGE=1
+
+      - name: Show package
+        run: ls -lh packages/
+
       - name: Upload rootful package
         uses: actions/upload-artifact@v4
         with:
