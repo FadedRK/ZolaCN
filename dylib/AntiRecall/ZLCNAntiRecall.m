@@ -63,7 +63,7 @@ static void ZLCNDescribeRecallMethod(Class cls, SEL sel, NSString *label) {
     if (!method) return;
     const char *types = method_getTypeEncoding(method);
     IMP implementation = method_getImplementation(method);
-    ZLCNLog(@"FOUND %@ | Class=%@ | SEL=%@ | Types=%s | IMP=%p", label, NSStringFromClass(cls), NSStringFromSelector(sel), types ?: @"(null)", implementation);
+    ZLCNLog(@"FOUND %@ | Class=%@ | SEL=%@ | Types=%s | IMP=%p", label, NSStringFromClass(cls), NSStringFromSelector(sel), types ? types : "(null)", implementation);
 }
 
 static void ZLCNScanRecallHandlers(void) {
