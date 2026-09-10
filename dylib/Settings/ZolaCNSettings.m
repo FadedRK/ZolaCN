@@ -1,6 +1,10 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
+extern void ZLCNRunAntiRecallDiagnostic(void);
+extern NSString *ZLCNAntiRecallDiagnosticText(void);
+extern NSString *ZLCNAntiRecallDiagnosticFilePath(void);
+
 static NSString * const ZLCNAntiRecallKey = @"ZolaCNAntiRecallEnabled";
 static NSString * const ZLCNPluginEnabledKey = @"ZolaCNPluginEnabled";
 static NSInteger const ZLCNSettingsRowTag = 0x5A4C434E;
@@ -15,7 +19,10 @@ static void ZLCNOpenSettings(void);
 - (void)open;
 @end
 
-@implementation ZolaCNSettingsViewController
+@interface ZLCNAntiRecallDiagnosticViewController : UIViewController
+@end
+
+@implementation ZLCNSettingsViewController
 
 - (instancetype)init {
     return [super initWithStyle:UITableViewStyleInsetGrouped];
@@ -35,7 +42,7 @@ static void ZLCNOpenSettings(void);
         case 0: return 1;
         case 1: return 2;
         case 2: return 2;
-        default: return 1;
+        default: return 2;
     }
 }
 
@@ -49,7 +56,7 @@ static void ZLCNOpenSettings(void);
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return section == 1 ? @"防撤回开关已接入设置中心，具体消息 Hook 将在下一阶段启用。" : nil;
+    return section == 1 ? @"防撤回开关已接入设置中心，当前版本提供运行时诊断；实际拦截将在诊断确认后启用。" : nil;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -71,7 +78,7 @@ static void ZLCNOpenSettings(void);
         if (indexPath.row == 0) {
             cell.textLabel.text = @"消息防撤回";
             UISwitch *sw = [UISwitch new];
-            sw.on = [[NSUserDefaults standardUserDefaults] boolForKey:ZLCNAntiRecallKey];
+            sw.on = [[NSUserDefaults standardUserDefaults] objectForKey:ZLCNAntiRecallKey] ? [[NSUserDefaults standardUserDefaults] boolForKey:ZLCNAntiRecallKey] : YES;
             [sw addTarget:self action:@selector(antiRecallSwitchChanged:) forControlEvents:UIControlEventValueChanged];
             cell.accessoryView = sw;
         } else {
@@ -83,8 +90,9 @@ static void ZLCNOpenSettings(void);
         cell.textLabel.text = indexPath.row == 0 ? @"自定义主题" : @"聊天气泡";
         cell.detailTextLabel.text = @"开发中";
     } else {
-        cell.textLabel.text = @"关于 ZolaCN";
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.textLabel.text = indexPath.row == 0 ? @"防撤回诊断" : @"关于 ZolaCN";
+        cell.detailTextLabel.text = indexPath.row == 0 ? @"运行时扫描" : nil;
     }
     return cell;
 }
@@ -101,6 +109,13 @@ static void ZLCNOpenSettings(void);
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+
+    if (indexPath.section == 3 && indexPath.row == 0) {
+        ZLCNAntiRecallDiagnosticViewController *vc = [ZLCNAntiRecallDiagnosticViewController new];
+        [self.navigationController pushViewController:vc animated:YES];
+        return;
+    }
+
     NSString *title = nil;
     NSString *message = nil;
     if (indexPath.section == 2) {
@@ -115,6 +130,80 @@ static void ZLCNOpenSettings(void);
         [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
         [self presentViewController:alert animated:YES completion:nil];
     }
+}
+
+@end
+
+@implementation ZLCNAntiRecallDiagnosticViewController {
+    UITextView *_textView;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"防撤回诊断";
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
+
+    _textView = [UITextView new];
+    _textView.translatesAutoresizingMaskIntoConstraints = NO;
+    _textView.editable = NO;
+    _textView.selectable = YES;
+    _textView.font = [UIFont monospacedSystemFontOfSize:13.0 weight:UIFontWeightRegular];
+    _textView.textColor = [UIColor labelColor];
+    _textView.backgroundColor = [UIColor systemBackgroundColor];
+    _textView.textContainerInset = UIEdgeInsetsMake(16, 12, 16, 12);
+    [self.view addSubview:_textView];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [_textView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_textView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [_textView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [_textView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
+    ]];
+
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"重新扫描" style:UIBarButtonItemStylePlain target:self action:@selector(rescan)];
+    self.navigationItem.leftBarButtonItems = @[
+        [[UIBarButtonItem alloc] initWithTitle:@"导出" style:UIBarButtonItemStylePlain target:self action:@selector(exportLog)]
+    ];
+
+    [self refreshText];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self refreshText];
+}
+
+- (void)refreshText {
+    NSString *text = ZLCNAntiRecallDiagnosticText();
+    NSString *path = ZLCNAntiRecallDiagnosticFilePath();
+    _textView.text = [NSString stringWithFormat:@"%@\n日志文件：%@", text ?: @"(null)", path ?: @"(unavailable)"];
+}
+
+- (void)rescan {
+    self.navigationItem.rightBarButtonItem.enabled = NO;
+    _textView.text = @"正在扫描运行时 Class / Method，请稍候…";
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        ZLCNRunAntiRecallDiagnostic();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.navigationItem.rightBarButtonItem.enabled = YES;
+            [self refreshText];
+        });
+    });
+}
+
+- (void)exportLog {
+    NSString *path = ZLCNAntiRecallDiagnosticFilePath();
+    if (!path.length || ![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"没有诊断文件" message:@"请先点击“重新扫描”。" preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
+    UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:@[[NSURL fileURLWithPath:path]] applicationActivities:nil];
+    if (activity.popoverPresentationController) activity.popoverPresentationController.barButtonItem = self.navigationItem.leftBarButtonItem;
+    [self presentViewController:activity animated:YES completion:nil];
 }
 
 @end
