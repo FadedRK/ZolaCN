@@ -4,6 +4,7 @@
 #import <string.h>
 
 static NSString * const ZLCNMediaStoreAntiRecallKey = @"ZolaCNAntiRecallEnabled";
+static NSString * const ZLCNShowOwnRecallKey = @"ZolaCNShowOwnRecalledMessageEnabled";
 static IMP ZLCNOriginalMediaStoreUndoIMP = NULL;
 static NSUInteger ZLCNMediaStoreUndoHookCount = 0;
 static NSUInteger ZLCNMediaStoreUndoBlockedCount = 0;
@@ -12,6 +13,12 @@ static BOOL ZLCNMediaStoreAntiRecallEnabled(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if (![defaults objectForKey:ZLCNMediaStoreAntiRecallKey]) return YES;
     return [defaults boolForKey:ZLCNMediaStoreAntiRecallKey];
+}
+
+static BOOL ZLCNShowOwnRecalledMessageEnabled(void) {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if (![defaults objectForKey:ZLCNShowOwnRecallKey]) return NO;
+    return [defaults boolForKey:ZLCNShowOwnRecallKey];
 }
 
 static NSString *ZLCNMediaStoreLogPath(void) {
@@ -71,22 +78,36 @@ static void ZLCNMediaStoreUndoReplacement(id self,
                                            id messageId,
                                            BOOL isGroup,
                                            BOOL isOwnerRecall) {
-    ZLCNMediaStoreLog(@"TRACE MediaStoreUndo | Class=%@ | messageId=%@ | isGroup=%@ | isOwnerRecall=%@ | enabled=%@",
+    BOOL antiRecallEnabled = ZLCNMediaStoreAntiRecallEnabled();
+    BOOL showOwnRecalledMessage = ZLCNShowOwnRecalledMessageEnabled();
+
+    ZLCNMediaStoreLog(@"TRACE MediaStoreUndo | Class=%@ | messageId=%@ | isGroup=%@ | isOwnerRecall=%@ | antiRecall=%@ | showOwn=%@",
                       NSStringFromClass(object_getClass(self)),
                       messageId ?: @"(nil)",
                       isGroup ? @"YES" : @"NO",
                       isOwnerRecall ? @"YES" : @"NO",
-                      ZLCNMediaStoreAntiRecallEnabled() ? @"YES" : @"NO");
+                      antiRecallEnabled ? @"YES" : @"NO",
+                      showOwnRecalledMessage ? @"YES" : @"NO");
 
-    /* Never interfere with the user's own recall operation. */
-    if (!isOwnerRecall && ZLCNMediaStoreAntiRecallEnabled()) {
+    /* Incoming recall: preserve the existing anti-recall behavior. */
+    if (!isOwnerRecall && antiRecallEnabled) {
         ZLCNMediaStoreUndoBlockedCount++;
-        ZLCNMediaStoreLog(@"BLOCK MediaStoreUndo | Class=%@ | blocked=%lu",
+        ZLCNMediaStoreLog(@"BLOCK MediaStoreUndo | remote recall | Class=%@ | blocked=%lu",
                           NSStringFromClass(object_getClass(self)),
                           (unsigned long)ZLCNMediaStoreUndoBlockedCount);
         return;
     }
 
+    /* Own recall: optionally keep the message visible locally. */
+    if (isOwnerRecall && showOwnRecalledMessage) {
+        ZLCNMediaStoreUndoBlockedCount++;
+        ZLCNMediaStoreLog(@"BLOCK MediaStoreUndo | own recall | keeping message visible | Class=%@ | blocked=%lu",
+                          NSStringFromClass(object_getClass(self)),
+                          (unsigned long)ZLCNMediaStoreUndoBlockedCount);
+        return;
+    }
+
+    /* Default behavior for own recall remains unchanged. */
     ZLCNCallOriginalMediaStoreUndo(ZLCNOriginalMediaStoreUndoIMP,
                                    self,
                                    _cmd,
@@ -159,7 +180,9 @@ __attribute__((constructor))
 static void ZLCNMediaStoreRecallInit(void) {
     @autoreleasepool {
         ZLCNMediaStoreLog(@"===== ZolaCN MediaStore Recall Hook =====");
-        ZLCNMediaStoreLog(@"Anti-Recall preference=%@", ZLCNMediaStoreAntiRecallEnabled() ? @"YES" : @"NO");
+        ZLCNMediaStoreLog(@"Anti-Recall preference=%@ | Show own recalled message=%@",
+                          ZLCNMediaStoreAntiRecallEnabled() ? @"YES" : @"NO",
+                          ZLCNShowOwnRecalledMessageEnabled() ? @"YES" : @"NO");
         ZLCNInstallMediaStoreUndoHook();
     }
 }
