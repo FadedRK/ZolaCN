@@ -9,9 +9,11 @@ static IMP ZLCNOriginalRecallTimeDoubleIMP = NULL;
 static IMP ZLCNOriginalRecallTimeLongLongIMP = NULL;
 static IMP ZLCNOriginalRecallTimeULongLongIMP = NULL;
 static Class ZLCNRecallTimeClass = Nil;
+static SEL ZLCNRecallTimeSEL = NULL;
 static BOOL ZLCNRecallTimeInstalled = NO;
 static NSUInteger ZLCNRecallTimeBlockedCount = 0;
-static NSTimeInterval ZLCNRemoteRecallShieldUntil = 0;
+static NSTimeInterval ZLCNRecallStateShieldUntil = 0;
+static BOOL ZLCNRecallStateShieldIsOwner = NO;
 
 static BOOL ZLCNShieldAntiRecallEnabled(void) {
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
@@ -48,46 +50,50 @@ static Method ZLCNShieldDirectMethod(Class cls, SEL sel) {
     return result;
 }
 
-static BOOL ZLCNShouldShieldRecallState(void) {
-    if (!ZLCNShieldAntiRecallEnabled()) return NO;
-    if (ZLCNShieldShowOwnEnabled()) return YES;
-    return CFAbsoluteTimeGetCurrent() < ZLCNRemoteRecallShieldUntil;
+static BOOL ZLCNRecallStateShieldArmed(void) {
+    return CFAbsoluteTimeGetCurrent() < ZLCNRecallStateShieldUntil;
 }
 
-static void ZLCNRecallTimeDoubleReplacement(id self, SEL _cmd, double value) {
-    if (ZLCNShouldShieldRecallState()) {
+static void ZLCNApplyRecallStateNeutralizedDouble(id self, SEL _cmd, double originalValue) {
+    if (!ZLCNOriginalRecallTimeDoubleIMP) return;
+    if (ZLCNRecallStateShieldArmed() && originalValue > 0.0) {
         ZLCNRecallTimeBlockedCount++;
-        ZLCNShieldLog(@"BLOCK recall state setter double | Class=%@ | value=%f | blocked=%lu",
-                      NSStringFromClass(object_getClass(self)), value,
+        ZLCNShieldLog(@"NEUTRALIZE recallTime double | Class=%@ | original=%f | forced=0 | owner=%@ | count=%lu",
+                      NSStringFromClass(object_getClass(self)), originalValue,
+                      ZLCNRecallStateShieldIsOwner ? @"YES" : @"NO",
                       (unsigned long)ZLCNRecallTimeBlockedCount);
+        ((void (*)(id, SEL, double))ZLCNOriginalRecallTimeDoubleIMP)(self, _cmd, 0.0);
         return;
     }
-    if (ZLCNOriginalRecallTimeDoubleIMP)
-        ((void (*)(id, SEL, double))ZLCNOriginalRecallTimeDoubleIMP)(self, _cmd, value);
+    ((void (*)(id, SEL, double))ZLCNOriginalRecallTimeDoubleIMP)(self, _cmd, originalValue);
 }
 
-static void ZLCNRecallTimeLongLongReplacement(id self, SEL _cmd, long long value) {
-    if (ZLCNShouldShieldRecallState()) {
+static void ZLCNApplyRecallStateNeutralizedLongLong(id self, SEL _cmd, long long originalValue) {
+    if (!ZLCNOriginalRecallTimeLongLongIMP) return;
+    if (ZLCNRecallStateShieldArmed() && originalValue > 0) {
         ZLCNRecallTimeBlockedCount++;
-        ZLCNShieldLog(@"BLOCK recall state setter long long | Class=%@ | value=%lld | blocked=%lu",
-                      NSStringFromClass(object_getClass(self)), value,
+        ZLCNShieldLog(@"NEUTRALIZE recallTime long long | Class=%@ | original=%lld | forced=0 | owner=%@ | count=%lu",
+                      NSStringFromClass(object_getClass(self)), originalValue,
+                      ZLCNRecallStateShieldIsOwner ? @"YES" : @"NO",
                       (unsigned long)ZLCNRecallTimeBlockedCount);
+        ((void (*)(id, SEL, long long))ZLCNOriginalRecallTimeLongLongIMP)(self, _cmd, 0);
         return;
     }
-    if (ZLCNOriginalRecallTimeLongLongIMP)
-        ((void (*)(id, SEL, long long))ZLCNOriginalRecallTimeLongLongIMP)(self, _cmd, value);
+    ((void (*)(id, SEL, long long))ZLCNOriginalRecallTimeLongLongIMP)(self, _cmd, originalValue);
 }
 
-static void ZLCNRecallTimeULongLongReplacement(id self, SEL _cmd, unsigned long long value) {
-    if (ZLCNShouldShieldRecallState()) {
+static void ZLCNApplyRecallStateNeutralizedULongLong(id self, SEL _cmd, unsigned long long originalValue) {
+    if (!ZLCNOriginalRecallTimeULongLongIMP) return;
+    if (ZLCNRecallStateShieldArmed() && originalValue > 0) {
         ZLCNRecallTimeBlockedCount++;
-        ZLCNShieldLog(@"BLOCK recall state setter unsigned long long | Class=%@ | value=%llu | blocked=%lu",
-                      NSStringFromClass(object_getClass(self)), value,
+        ZLCNShieldLog(@"NEUTRALIZE recallTime unsigned long long | Class=%@ | original=%llu | forced=0 | owner=%@ | count=%lu",
+                      NSStringFromClass(object_getClass(self)), originalValue,
+                      ZLCNRecallStateShieldIsOwner ? @"YES" : @"NO",
                       (unsigned long)ZLCNRecallTimeBlockedCount);
+        ((void (*)(id, SEL, unsigned long long))ZLCNOriginalRecallTimeULongLongIMP)(self, _cmd, 0);
         return;
     }
-    if (ZLCNOriginalRecallTimeULongLongIMP)
-        ((void (*)(id, SEL, unsigned long long))ZLCNOriginalRecallTimeULongLongIMP)(self, _cmd, value);
+    ((void (*)(id, SEL, unsigned long long))ZLCNOriginalRecallTimeULongLongIMP)(self, _cmd, originalValue);
 }
 
 static void ZLCNInstallRecallTimeShield(void) {
@@ -117,19 +123,20 @@ static void ZLCNInstallRecallTimeShield(void) {
 
         if (strcmp(types ?: "", "v24@0:8d16") == 0) {
             ZLCNOriginalRecallTimeDoubleIMP = original;
-            method_setImplementation(method, (IMP)ZLCNRecallTimeDoubleReplacement);
+            method_setImplementation(method, (IMP)ZLCNApplyRecallStateNeutralizedDouble);
         } else if (strcmp(types ?: "", "v24@0:8q16") == 0) {
             ZLCNOriginalRecallTimeLongLongIMP = original;
-            method_setImplementation(method, (IMP)ZLCNRecallTimeLongLongReplacement);
+            method_setImplementation(method, (IMP)ZLCNApplyRecallStateNeutralizedLongLong);
         } else if (strcmp(types ?: "", "v24@0:8Q16") == 0) {
             ZLCNOriginalRecallTimeULongLongIMP = original;
-            method_setImplementation(method, (IMP)ZLCNRecallTimeULongLongReplacement);
+            method_setImplementation(method, (IMP)ZLCNApplyRecallStateNeutralizedULongLong);
         } else {
             ZLCNShieldLog(@"SKIP recall state setter | unsupported Types=%s", types ?: "(null)");
             continue;
         }
 
         ZLCNRecallTimeClass = cls;
+        ZLCNRecallTimeSEL = matchedSEL;
         ZLCNRecallTimeInstalled = YES;
         ZLCNShieldLog(@"INSTALLED recall state shield | Class=%@ | SEL=%@ | Types=%s",
                       NSStringFromClass(cls), NSStringFromSelector(matchedSEL), types);
@@ -137,26 +144,41 @@ static void ZLCNInstallRecallTimeShield(void) {
     free(classes);
 }
 
+/* Arm a very short state-neutralization window immediately before Zalo processes
+   the corresponding recall transaction. The model still receives the setter,
+   but the recall timestamp is rewritten to zero instead of leaving the object
+   in the recalled state. */
+void ZLCNMarkRecallStateShield(BOOL isOwnerRecall) {
+    if (!ZLCNShieldAntiRecallEnabled()) return;
+    if (isOwnerRecall && !ZLCNShieldShowOwnEnabled()) return;
+
+    ZLCNRecallStateShieldIsOwner = isOwnerRecall;
+    ZLCNRecallStateShieldUntil = CFAbsoluteTimeGetCurrent() + 1.5;
+    ZLCNShieldLog(@"RECALL state shield armed | owner=%@ | duration=1.5s",
+                  isOwnerRecall ? @"YES" : @"NO");
+}
+
 void ZLCNMarkRemoteRecallState(void) {
-    ZLCNRemoteRecallShieldUntil = CFAbsoluteTimeGetCurrent() + 2.0;
-    ZLCNShieldLog(@"REMOTE recall state shield armed for 2 seconds");
+    ZLCNMarkRecallStateShield(NO);
 }
 
 NSString *ZLCNRecallStateShieldDiagnostic(void) {
-    return [NSString stringWithFormat:@"Recall state shield=%@, class=%@, blocked=%lu, remoteWindow=%@",
+    return [NSString stringWithFormat:@"Recall state shield=%@, class=%@, selector=%@, neutralized=%lu, window=%@, owner=%@",
             ZLCNRecallTimeInstalled ? @"ON" : @"OFF",
             ZLCNRecallTimeClass ? NSStringFromClass(ZLCNRecallTimeClass) : @"(none)",
+            ZLCNRecallTimeSEL ? NSStringFromSelector(ZLCNRecallTimeSEL) : @"(none)",
             (unsigned long)ZLCNRecallTimeBlockedCount,
-            CFAbsoluteTimeGetCurrent() < ZLCNRemoteRecallShieldUntil ? @"ARMED" : @"idle"];
+            ZLCNRecallStateShieldArmed() ? @"ARMED" : @"idle",
+            ZLCNRecallStateShieldIsOwner ? @"YES" : @"NO"];
 }
 
 __attribute__((constructor))
 static void ZLCNRecallStateShieldInit(void) {
     @autoreleasepool {
         dispatch_async(dispatch_get_main_queue(), ^{
-            static const NSTimeInterval delays[] = {0.25, 0.75, 1.5, 3.0, 5.0};
+            static const NSTimeInterval delays[] = {0.25, 0.75, 1.5, 3.0, 5.0, 8.0};
             ZLCNInstallRecallTimeShield();
-            for (NSUInteger i = 0; i < 5; i++) {
+            for (NSUInteger i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[i] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     ZLCNInstallRecallTimeShield();
                 });
