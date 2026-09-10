@@ -22,7 +22,7 @@ static void ZLCNOpenSettings(void);
 @interface ZLCNAntiRecallDiagnosticViewController : UIViewController
 @end
 
-@implementation ZLCNSettingsViewController
+@implementation ZolaCNSettingsViewController
 
 - (instancetype)init {
     return [super initWithStyle:UITableViewStyleInsetGrouped];
@@ -160,10 +160,9 @@ static void ZLCNOpenSettings(void);
         [_textView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
     ]];
 
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"重新扫描" style:UIBarButtonItemStylePlain target:self action:@selector(rescan)];
-    self.navigationItem.leftBarButtonItems = @[
-        [[UIBarButtonItem alloc] initWithTitle:@"导出" style:UIBarButtonItemStylePlain target:self action:@selector(exportLog)]
-    ];
+    UIBarButtonItem *rescan = [[UIBarButtonItem alloc] initWithTitle:@"重新扫描" style:UIBarButtonItemStylePlain target:self action:@selector(rescan)];
+    UIBarButtonItem *export = [[UIBarButtonItem alloc] initWithTitle:@"导出" style:UIBarButtonItemStylePlain target:self action:@selector(exportLog)];
+    self.navigationItem.rightBarButtonItems = @[rescan, export];
 
     [self refreshText];
 }
@@ -180,13 +179,13 @@ static void ZLCNOpenSettings(void);
 }
 
 - (void)rescan {
-    self.navigationItem.rightBarButtonItem.enabled = NO;
+    self.navigationItem.rightBarButtonItems.firstObject.enabled = NO;
     _textView.text = @"正在扫描运行时 Class / Method，请稍候…";
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         ZLCNRunAntiRecallDiagnostic();
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.navigationItem.rightBarButtonItem.enabled = YES;
+            self.navigationItem.rightBarButtonItems.firstObject.enabled = YES;
             [self refreshText];
         });
     });
@@ -202,7 +201,7 @@ static void ZLCNOpenSettings(void);
     }
 
     UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:@[[NSURL fileURLWithPath:path]] applicationActivities:nil];
-    if (activity.popoverPresentationController) activity.popoverPresentationController.barButtonItem = self.navigationItem.leftBarButtonItem;
+    if (activity.popoverPresentationController) activity.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
     [self presentViewController:activity animated:YES completion:nil];
 }
 
