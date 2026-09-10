@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <objc/runtime.h>
 
 static NSString * const ZLCNAntiRecallKey = @"ZolaCNAntiRecallEnabled";
 static NSString * const ZLCNPluginEnabledKey = @"ZolaCNPluginEnabled";
@@ -130,14 +131,6 @@ static UIViewController *ZLCNTopViewController(void) {
     while ([vc isKindOfClass:[UITabBarController class]] && ((UITabBarController *)vc).selectedViewController) vc = ((UITabBarController *)vc).selectedViewController;
     while ([vc isKindOfClass:[UINavigationController class]] && ((UINavigationController *)vc).visibleViewController) vc = ((UINavigationController *)vc).visibleViewController;
     return vc;
-}
-
-static void ZLCNOpenSettings(void) {
-    UIViewController *source = ZLCNTopViewController();
-    if (!source || [source isKindOfClass:[ZolaCNSettingsViewController class]]) return;
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:[ZolaCNSettingsViewController new]];
-    nav.modalPresentationStyle = UIModalPresentationPageSheet;
-    [source presentViewController:nav animated:YES completion:nil];
 }
 
 static BOOL ZLCNLooksLikeSettingsController(UIViewController *vc) {
