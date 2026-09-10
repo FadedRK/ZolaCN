@@ -5,6 +5,8 @@ static NSString * const ZLCNAntiRecallKey = @"ZolaCNAntiRecallEnabled";
 static NSString * const ZLCNPluginEnabledKey = @"ZolaCNPluginEnabled";
 static NSInteger const ZLCNSettingsRowTag = 0x5A4C434E;
 
+static void ZLCNOpenSettings(void);
+
 @interface ZolaCNSettingsViewController : UITableViewController
 @end
 
@@ -169,6 +171,14 @@ static void ZLCNSettingsViewDidAppear(UIViewController *self, SEL _cmd, BOOL ani
     void (*orig)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))[self methodForSelector:alias];
     if (orig) orig(self, alias, animated);
     dispatch_async(dispatch_get_main_queue(), ^{ ZLCNConfigureSettingsEntry(self); });
+}
+
+static void ZLCNOpenSettings(void) {
+    UIViewController *source = ZLCNTopViewController();
+    if (!source || [source isKindOfClass:[ZolaCNSettingsViewController class]]) return;
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:[ZolaCNSettingsViewController new]];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    [source presentViewController:nav animated:YES completion:nil];
 }
 
 void ZLCNInstallSettings(void) {
