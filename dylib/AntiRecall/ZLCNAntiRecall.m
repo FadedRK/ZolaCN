@@ -7,12 +7,11 @@ static NSString * const ZLCNAntiRecallKey = @"ZolaCNAntiRecallEnabled";
 static NSString * const ZLCNDiagnosticFileName = @"ZolaCN-AntiRecall.log";
 
 /*
- * This build is deliberately TRACE-ONLY.
- * The original recall handler is allowed to run so a single installed Zalo
- * instance can reveal the downstream call chain in the persistent log.
- * Once the chain is confirmed, this flag will be changed for the production hook.
+ * The diagnostic run confirmed that the incoming recall reaches
+ * _handleRecallWithData: and then updateDBWhenRecalledChats:completion:.
+ * Production mode now blocks at _handleRecallWithData: when anti-recall is enabled.
  */
-static const BOOL ZLCNTraceOnly = YES;
+static const BOOL ZLCNTraceOnly = NO;
 
 static NSString *ZLCNLastDiagnostic = nil;
 
@@ -253,7 +252,7 @@ static void ZLCNLocalCacheRecallReplacement(id self, SEL _cmd, id notification) 
     }
 
     if (ZLCNAntiRecallEnabled()) {
-        ZLCNInterceptedLocalCacheRecallCount++;
+        ZLCNInterceptedLocalCacheCount++;
         ZLCNLog(@"BLOCK LOCAL CACHE RECALL | Class=%@", NSStringFromClass(object_getClass(self)));
         return;
     }
@@ -272,6 +271,13 @@ static void ZLCNHandleRecallWithDataReplacement(id self, SEL _cmd, id data) {
         ZLCNLogRecallBacktrace(@"_handleRecallWithData stack");
     }
 
+    if (!ZLCNTraceOnly && ZLCNAntiRecallEnabled()) {
+        ZLCNInterceptedRecallCount++;
+        ZLCNLog(@"BLOCK _handleRecallWithData: | Class=%@ | downstream updateDB suppressed",
+                NSStringFromClass(object_getClass(self)));
+        return;
+    }
+
     ZLCNCallOriginalV24(ZLCNOriginalHandleRecallWithDataIMP, self, _cmd, data);
 }
 
@@ -285,6 +291,13 @@ static void ZLCNUpdateDBWhenRecalledChatsReplacement(id self, SEL _cmd, id chats
                 completion ? NSStringFromClass(object_getClass(completion)) : @"nil",
                 (unsigned long)ZLCNUpdateDBWhenRecalledChatsCallCount);
         ZLCNLogRecallBacktrace(@"updateDBWhenRecalledChats stack");
+    }
+
+    if (!ZLCNTraceOnly && ZLCNAntiRecallEnabled()) {
+        ZLCNInterceptedRecallCount++;
+        ZLCNLog(@"BLOCK updateDBWhenRecalledChats:completion: | Class=%@",
+                NSStringFromClass(object_getClass(self)));
+        return;
     }
 
     ZLCNCallOriginalV32Block(ZLCNOriginalUpdateDBWhenRecalledChatsIMP, self, _cmd, chats, completion);
@@ -356,7 +369,7 @@ static void ZLCNScanRecallHandlers(void) {
     ZLCNLog(@"Documents log=%@", ZLCNHomeDiagnosticPath());
     ZLCNLog(@"Caches log=%@", ZLCNCachesDiagnosticPath());
     ZLCNLog(@"Anti-Recall preference=%@", ZLCNAntiRecallEnabled() ? @"YES" : @"NO");
-    ZLCNLog(@"Mode=%@ | original recall is allowed so downstream chain can be traced", ZLCNTraceOnly ? @"TRACE-ONLY" : @"ACTIVE");
+    ZLCNLog(@"Mode=%@ | production hook blocks the confirmed downstream recall path", ZLCNTraceOnly ? @"TRACE-ONLY" : @"ACTIVE");
 
     SEL recallSEL = sel_registerName("handleRecallMessageNotification:");
     SEL handleDataSEL = sel_registerName("_handleRecallWithData:");
@@ -390,7 +403,7 @@ NSString *ZLCNAntiRecallDiagnosticText(void) {
                         ZLCNHandleRecallWithDataHookCount ? @"ON" : @"OFF",
                         ZLCNUpdateDBWhenRecalledChatsHookCount ? @"ON" : @"OFF",
                         (unsigned long)ZLCNInterceptedRecallCount,
-                        (unsigned long)ZLCNInterceptedLocalCacheRecallCount,
+                        (unsigned long)ZLCNInterceptedLocalCacheCount,
                         (unsigned long)ZLCNHandleRecallWithDataCallCount,
                         (unsigned long)ZLCNUpdateDBWhenRecalledChatsCallCount];
     return [summary stringByAppendingString:status];
