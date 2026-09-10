@@ -6,6 +6,13 @@ static NSString * const ZLCNAntiRecallKey = @"ZolaCNAntiRecallEnabled";
 static NSString * const ZLCNDiagnosticFileName = @"ZolaCN-AntiRecall.log";
 static NSString *ZLCNLastDiagnostic = nil;
 
+static IMP ZLCNOriginalRecallIMP = NULL;
+static IMP ZLCNOriginalLocalCacheRecallIMP = NULL;
+static NSUInteger ZLCNRecallHookCount = 0;
+static NSUInteger ZLCNLocalCacheHookCount = 0;
+static NSUInteger ZLCNInterceptedRecallCount = 0;
+static NSUInteger ZLCNInterceptedLocalCacheCount = 0;
+
 static BOOL ZLCNAntiRecallEnabled(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if (![defaults objectForKey:ZLCNAntiRecallKey]) return YES;
@@ -66,6 +73,75 @@ static void ZLCNDescribeRecallMethod(Class cls, SEL sel, NSString *label) {
     ZLCNLog(@"FOUND %@ | Class=%@ | SEL=%@ | Types=%s | IMP=%p", label, NSStringFromClass(cls), NSStringFromSelector(sel), types ? types : "(null)", implementation);
 }
 
+static void ZLCNRecallReplacement(id self, SEL _cmd, id notification) {
+    if (ZLCNAntiRecallEnabled()) {
+        ZLCNInterceptedRecallCount++;
+        if (ZLCNInterceptedRecallCount <= 20) {
+            ZLCNLog(@"Intercepted RECALL | Class=%@ | notification=%@", NSStringFromClass(object_getClass(self)), notification ? NSStringFromClass(object_getClass(notification)) : @"nil");
+        }
+        return;
+    }
+
+    if (ZLCNOriginalRecallIMP) {
+        ((void (*)(id, SEL, id))ZLCNOriginalRecallIMP)(self, _cmd, notification);
+    }
+}
+
+static void ZLCNLocalCacheRecallReplacement(id self, SEL _cmd, id notification) {
+    if (ZLCNAntiRecallEnabled()) {
+        ZLCNInterceptedLocalCacheCount++;
+        if (ZLCNInterceptedLocalCacheCount <= 20) {
+            ZLCNLog(@"Intercepted LOCAL CACHE RECALL | notification=%@", notification ? NSStringFromClass(object_getClass(notification)) : @"nil");
+        }
+        return;
+    }
+
+    if (ZLCNOriginalLocalCacheRecallIMP) {
+        ((void (*)(id, SEL, id))ZLCNOriginalLocalCacheRecallIMP)(self, _cmd, notification);
+    }
+}
+
+static BOOL ZLCNInstallRecallHookForClass(Class cls, SEL sel, IMP replacement, IMP *originalStorage, NSString *label) {
+    if (!cls || !originalStorage) return NO;
+
+    Method method = ZLCNDirectMethod(cls, sel);
+    if (!method) return NO;
+    if (*originalStorage) return YES;
+
+    const char *types = method_getTypeEncoding(method);
+    if (strcmp(types ? types : "", "v24@0:8@16") != 0) {
+        ZLCNLog(@"SKIP %@ hook | Class=%@ | unexpected Types=%s", label, NSStringFromClass(cls), types ? types : "(null)");
+        return NO;
+    }
+
+    IMP original = method_getImplementation(method);
+    *originalStorage = original;
+    method_setImplementation(method, replacement);
+    ZLCNLog(@"INSTALLED %@ hook | Class=%@ | SEL=%@ | Types=%s", label, NSStringFromClass(cls), NSStringFromSelector(sel), types);
+    return YES;
+}
+
+static void ZLCNInstallRecallHooks(void) {
+    SEL recallSEL = sel_registerName("handleRecallMessageNotification:");
+
+    Class dataCoordinator = NSClassFromString(@"MSDataCoordinator");
+    Class localCache = NSClassFromString(@"MSLocalCache");
+
+    if (ZLCNInstallRecallHookForClass(dataCoordinator, recallSEL, (IMP)ZLCNRecallReplacement, &ZLCNOriginalRecallIMP, @"MSDataCoordinator")) {
+        ZLCNRecallHookCount = 1;
+    }
+
+    if (ZLCNInstallRecallHookForClass(localCache, recallSEL, (IMP)ZLCNLocalCacheRecallReplacement, &ZLCNOriginalLocalCacheRecallIMP, @"MSLocalCache")) {
+        ZLCNLocalCacheHookCount = 1;
+    }
+
+    ZLCNAppendHookStatus();
+}
+
+static void ZLCNAppendHookStatus(void) {
+    ZLCNLog(@"Hooks installed | MSDataCoordinator=%@ | MSLocalCache=%@", ZLCNOriginalRecallIMP ? @"YES" : @"NO", ZLCNOriginalLocalCacheRecallIMP ? @"YES" : @"NO");
+}
+
 static void ZLCNScanRecallHandlers(void) {
     ZLCNLastDiagnostic = nil;
 
@@ -74,7 +150,7 @@ static void ZLCNScanRecallHandlers(void) {
     ZLCNLog(@"Bundle=%@", [[NSBundle mainBundle] bundleIdentifier] ?: @"(null)");
     ZLCNLog(@"Documents log=%@", ZLCNHomeDiagnosticPath());
     ZLCNLog(@"Caches log=%@", ZLCNCachesDiagnosticPath());
-    ZLCNLog(@"No recall hook is installed in this diagnostic build");
+    ZLCNLog(@"Anti-Recall preference=%@", ZLCNAntiRecallEnabled() ? @"YES" : @"NO");
 
     SEL recallSEL = sel_registerName("handleRecallMessageNotification:");
     SEL undoSEL = sel_registerName("proccessUndoInMediaStoreWithMessageId:isGroup:isOwnerRecall:");
@@ -117,15 +193,19 @@ static void ZLCNScanRecallHandlers(void) {
 void ZLCNInstallAntiRecall(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         ZLCNScanRecallHandlers();
+        ZLCNInstallRecallHooks();
     });
 }
 
 void ZLCNRunAntiRecallDiagnostic(void) {
     ZLCNScanRecallHandlers();
+    ZLCNInstallRecallHooks();
 }
 
 NSString *ZLCNAntiRecallDiagnosticText(void) {
-    return ZLCNLastDiagnostic ?: @"尚未执行防撤回诊断。请点击“重新扫描”。";
+    NSString *summary = ZLCNLastDiagnostic ?: @"尚未执行防撤回诊断。请点击“重新扫描”。";
+    NSString *status = [NSString stringWithFormat:@"\nHook=MSDataCoordinator:%@, MSLocalCache:%@\nIntercepted=%lu/%lu", ZLCNRecallHookCount ? @"ON" : @"OFF", ZLCNLocalCacheHookCount ? @"ON" : @"OFF", (unsigned long)ZLCNInterceptedRecallCount, (unsigned long)ZLCNInterceptedLocalCacheCount];
+    return [summary stringByAppendingString:status];
 }
 
 NSString *ZLCNAntiRecallDiagnosticFilePath(void) {
