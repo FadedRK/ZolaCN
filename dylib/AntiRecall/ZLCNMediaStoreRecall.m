@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <stdarg.h>
 #import <string.h>
 
 static NSString * const ZLCNMediaStoreAntiRecallKey = @"ZolaCNAntiRecallEnabled";
