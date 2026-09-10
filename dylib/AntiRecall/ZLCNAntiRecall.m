@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <stdarg.h>
+#import <string.h>
 
 static NSString * const ZLCNAntiRecallKey = @"ZolaCNAntiRecallEnabled";
 static NSString * const ZLCNDiagnosticFileName = @"ZolaCN-AntiRecall.log";
@@ -12,6 +13,8 @@ static NSUInteger ZLCNRecallHookCount = 0;
 static NSUInteger ZLCNLocalCacheHookCount = 0;
 static NSUInteger ZLCNInterceptedRecallCount = 0;
 static NSUInteger ZLCNInterceptedLocalCacheCount = 0;
+
+static void ZLCNAppendHookStatus(void);
 
 static BOOL ZLCNAntiRecallEnabled(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
