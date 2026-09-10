@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <stdarg.h>
 #import <string.h>
@@ -19,6 +20,65 @@ static BOOL ZLCNShowOwnRecalledMessageEnabled(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if (![defaults objectForKey:ZLCNShowOwnRecallKey]) return NO;
     return [defaults boolForKey:ZLCNShowOwnRecallKey];
+}
+
+static UIWindow *ZLCNMediaStoreKeyWindow(void) {
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            if (window.isKeyWindow) return window;
+        }
+    }
+    return nil;
+}
+
+static void ZLCNShowOwnRecallToast(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *window = ZLCNMediaStoreKeyWindow();
+        if (!window) return;
+
+        for (UIView *subview in window.subviews) {
+            if (subview.tag == 0x5A4F5254) {
+                [subview removeFromSuperview];
+            }
+        }
+
+        UILabel *toast = [[UILabel alloc] initWithFrame:CGRectZero];
+        toast.tag = 0x5A4F5254;
+        toast.text = @"你撤回了一条消息";
+        toast.textColor = [UIColor whiteColor];
+        toast.backgroundColor = [UIColor colorWithWhite:0.15 alpha:0.92];
+        toast.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightMedium];
+        toast.textAlignment = NSTextAlignmentCenter;
+        toast.numberOfLines = 1;
+        toast.layer.cornerRadius = 18.0;
+        toast.layer.masksToBounds = YES;
+        toast.translatesAutoresizingMaskIntoConstraints = NO;
+        [window addSubview:toast];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [toast.centerXAnchor constraintEqualToAnchor:window.centerXAnchor],
+            [toast.bottomAnchor constraintEqualToAnchor:window.safeAreaLayoutGuide.bottomAnchor constant:-26.0],
+            [toast.heightAnchor constraintEqualToConstant:36.0],
+            [toast.widthAnchor constraintGreaterThanOrEqualToConstant:150.0],
+            [toast.widthAnchor constraintLessThanOrEqualToAnchor:window.widthAnchor constant:-48.0]
+        ]];
+
+        toast.alpha = 0.0;
+        [UIView animateWithDuration:0.18 animations:^{
+            toast.alpha = 1.0;
+        } completion:^(BOOL finished) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (toast.superview) {
+                    [UIView animateWithDuration:0.2 animations:^{
+                        toast.alpha = 0.0;
+                    } completion:^(BOOL finished2) {
+                        [toast removeFromSuperview];
+                    }];
+                }
+            });
+        }];
+    });
 }
 
 static NSString *ZLCNMediaStoreLogPath(void) {
@@ -104,6 +164,7 @@ static void ZLCNMediaStoreUndoReplacement(id self,
         ZLCNMediaStoreLog(@"BLOCK MediaStoreUndo | own recall | keeping message visible | Class=%@ | blocked=%lu",
                           NSStringFromClass(object_getClass(self)),
                           (unsigned long)ZLCNMediaStoreUndoBlockedCount);
+        ZLCNShowOwnRecallToast();
         return;
     }
 
