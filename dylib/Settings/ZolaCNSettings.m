@@ -7,6 +7,7 @@ extern NSString *ZLCNAntiRecallDiagnosticFilePath(void);
 
 static NSString * const ZLCNAntiRecallKey = @"ZolaCNAntiRecallEnabled";
 static NSString * const ZLCNPluginEnabledKey = @"ZolaCNPluginEnabled";
+static NSString * const ZLCNShowOwnRecallKey = @"ZolaCNShowOwnRecalledMessageEnabled";
 static NSInteger const ZLCNSettingsRowTag = 0x5A4C434E;
 
 static void ZLCNOpenSettings(void);
@@ -40,7 +41,7 @@ static void ZLCNOpenSettings(void);
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case 0: return 1;
-        case 1: return 2;
+        case 1: return 3;
         case 2: return 2;
         default: return 2;
     }
@@ -56,7 +57,7 @@ static void ZLCNOpenSettings(void);
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return section == 1 ? @"防撤回开关已接入设置中心，当前版本提供运行时诊断；实际拦截将在诊断确认后启用。" : nil;
+    return section == 1 ? @"防撤回：阻止别人撤回消息。自己撤回的消息可单独选择是否继续显示。" : nil;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -81,6 +82,12 @@ static void ZLCNOpenSettings(void);
             sw.on = [[NSUserDefaults standardUserDefaults] objectForKey:ZLCNAntiRecallKey] ? [[NSUserDefaults standardUserDefaults] boolForKey:ZLCNAntiRecallKey] : YES;
             [sw addTarget:self action:@selector(antiRecallSwitchChanged:) forControlEvents:UIControlEventValueChanged];
             cell.accessoryView = sw;
+        } else if (indexPath.row == 1) {
+            cell.textLabel.text = @"显示自己撤回的消息";
+            UISwitch *sw = [UISwitch new];
+            sw.on = [[NSUserDefaults standardUserDefaults] objectForKey:ZLCNShowOwnRecallKey] ? [[NSUserDefaults standardUserDefaults] boolForKey:ZLCNShowOwnRecallKey] : NO;
+            [sw addTarget:self action:@selector(showOwnRecallSwitchChanged:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = sw;
         } else {
             cell.textLabel.text = @"消息增强";
             cell.detailTextLabel.text = @"即将加入";
@@ -104,6 +111,11 @@ static void ZLCNOpenSettings(void);
 
 - (void)antiRecallSwitchChanged:(UISwitch *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:ZLCNAntiRecallKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (void)showOwnRecallSwitchChanged:(UISwitch *)sender {
+    [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:ZLCNShowOwnRecallKey];
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
