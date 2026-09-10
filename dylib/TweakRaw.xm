@@ -4,7 +4,11 @@
 
 extern const unsigned char ZLCNTranslationsPlist[];
 extern const unsigned long ZLCNTranslationsPlistLength;
+#ifdef __cplusplus
+extern "C" void ZLCNInstallSettings(void);
+#else
 extern void ZLCNInstallSettings(void);
+#endif
 
 static NSDictionary *ZLCNTranslations;
 static NSUInteger ZLCNHitCount;
