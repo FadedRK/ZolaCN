@@ -5,7 +5,7 @@
 #import <string.h>
 #import "ZLCNRecallToast.h"
 
-extern void ZLCNMarkRemoteRecallState(void);
+extern void ZLCNMarkRecallStateShield(BOOL isOwnerRecall);
 
 static NSString * const ZLCNMediaStoreAntiRecallKey = @"ZolaCNAntiRecallEnabled";
 static NSString * const ZLCNShowOwnRecallKey = @"ZolaCNShowOwnRecalledMessageEnabled";
@@ -83,7 +83,7 @@ static void ZLCNMediaStoreUndoReplacement(id self, SEL _cmd, id messageId, BOOL 
 
     if (!isOwnerRecall && antiRecallEnabled) {
         ZLCNMediaStoreUndoBlockedCount++;
-        ZLCNMarkRemoteRecallState();
+        ZLCNMarkRecallStateShield(NO);
         ZLCNMediaStoreLog(@"BLOCK MediaStoreUndo | remote recall | Class=%@ | blocked=%lu",
                           NSStringFromClass(object_getClass(self)), (unsigned long)ZLCNMediaStoreUndoBlockedCount);
         ZLCNShowRecallToast(NO, ZLCNRecallSenderNameFromMessageId(messageId));
@@ -92,6 +92,7 @@ static void ZLCNMediaStoreUndoReplacement(id self, SEL _cmd, id messageId, BOOL 
 
     if (isOwnerRecall && showOwnRecalledMessage) {
         ZLCNMediaStoreUndoBlockedCount++;
+        ZLCNMarkRecallStateShield(YES);
         ZLCNMediaStoreLog(@"BLOCK MediaStoreUndo | own recall | keeping message visible | Class=%@ | blocked=%lu",
                           NSStringFromClass(object_getClass(self)), (unsigned long)ZLCNMediaStoreUndoBlockedCount);
         ZLCNShowRecallToast(YES, nil);
@@ -111,7 +112,6 @@ static BOOL ZLCNTryInstallMediaStoreUndoHook(void) {
     classCount = objc_getClassList(classes, classCount);
     NSUInteger matches = 0;
     NSUInteger installed = 0;
-
     for (int i = 0; i < classCount; i++) {
         Class cls = classes[i];
         Method method = ZLCNMediaStoreDirectMethod(cls, sel);
