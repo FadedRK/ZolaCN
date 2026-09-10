@@ -66,7 +66,7 @@ static void ZLCNRecallObjectReplacement(id self, SEL _cmd, id arg) {
                       NSStringFromClass(object_getClass(self)),
                       arg ? NSStringFromClass(object_getClass(arg)) : @"nil",
                       (unsigned long)ZLCNRecallActionBlockedCount);
-        ZLCNBlockedToast();
+        ZLCNActionBlockedToast();
         return;
     }
     if (ZLCNOriginalRecallObjectIMP)
@@ -79,7 +79,7 @@ static void ZLCNRecallBOOLReplacement(id self, SEL _cmd, BOOL arg) {
         ZLCNActionLog(@"BLOCK recall: | Class=%@ | BOOL=%@ | blocked=%lu",
                       NSStringFromClass(object_getClass(self)), arg ? @"YES" : @"NO",
                       (unsigned long)ZLCNRecallActionBlockedCount);
-        ZLCNBlockedToast();
+        ZLCNActionBlockedToast();
         return;
     }
     if (ZLCNOriginalRecallBOOLIMP)
@@ -92,7 +92,7 @@ static void ZLCNRecallLongLongReplacement(id self, SEL _cmd, long long arg) {
         ZLCNActionLog(@"BLOCK recall: | Class=%@ | value=%lld | blocked=%lu",
                       NSStringFromClass(object_getClass(self)), arg,
                       (unsigned long)ZLCNRecallActionBlockedCount);
-        ZLCNBlockedToast();
+        ZLCNActionBlockedToast();
         return;
     }
     if (ZLCNOriginalRecallLongLongIMP)
@@ -105,7 +105,7 @@ static void ZLCNRecallULongLongReplacement(id self, SEL _cmd, unsigned long long
         ZLCNActionLog(@"BLOCK recall: | Class=%@ | value=%llu | blocked=%lu",
                       NSStringFromClass(object_getClass(self)), arg,
                       (unsigned long)ZLCNRecallActionBlockedCount);
-        ZLCNBlockedToast();
+        ZLCNActionBlockedToast();
         return;
     }
     if (ZLCNOriginalRecallULongLongIMP)
@@ -118,7 +118,7 @@ static void ZLCNRecallDoubleReplacement(id self, SEL _cmd, double arg) {
         ZLCNActionLog(@"BLOCK recall: | Class=%@ | value=%f | blocked=%lu",
                       NSStringFromClass(object_getClass(self)), arg,
                       (unsigned long)ZLCNRecallActionBlockedCount);
-        ZLCNBlockedToast();
+        ZLCNActionBlockedToast();
         return;
     }
     if (ZLCNOriginalRecallDoubleIMP)
