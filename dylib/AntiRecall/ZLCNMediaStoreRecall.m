@@ -3,12 +3,15 @@
 #import <objc/runtime.h>
 #import <stdarg.h>
 #import <string.h>
+#import "ZLCNRecallToast.h"
 
 static NSString * const ZLCNMediaStoreAntiRecallKey = @"ZolaCNAntiRecallEnabled";
 static NSString * const ZLCNShowOwnRecallKey = @"ZolaCNShowOwnRecalledMessageEnabled";
 static IMP ZLCNOriginalMediaStoreUndoIMP = NULL;
 static NSUInteger ZLCNMediaStoreUndoHookCount = 0;
 static NSUInteger ZLCNMediaStoreUndoBlockedCount = 0;
+static NSUInteger ZLCNMediaStoreInstallAttempt = 0;
+static BOOL ZLCNMediaStoreInstallScheduled = NO;
 
 static BOOL ZLCNMediaStoreAntiRecallEnabled(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
@@ -20,65 +23,6 @@ static BOOL ZLCNShowOwnRecalledMessageEnabled(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if (![defaults objectForKey:ZLCNShowOwnRecallKey]) return NO;
     return [defaults boolForKey:ZLCNShowOwnRecallKey];
-}
-
-static UIWindow *ZLCNMediaStoreKeyWindow(void) {
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            if (window.isKeyWindow) return window;
-        }
-    }
-    return nil;
-}
-
-static void ZLCNShowOwnRecallToast(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *window = ZLCNMediaStoreKeyWindow();
-        if (!window) return;
-
-        for (UIView *subview in window.subviews) {
-            if (subview.tag == 0x5A4F5254) {
-                [subview removeFromSuperview];
-            }
-        }
-
-        UILabel *toast = [[UILabel alloc] initWithFrame:CGRectZero];
-        toast.tag = 0x5A4F5254;
-        toast.text = @"你撤回了一条消息";
-        toast.textColor = [UIColor whiteColor];
-        toast.backgroundColor = [UIColor colorWithWhite:0.15 alpha:0.92];
-        toast.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightMedium];
-        toast.textAlignment = NSTextAlignmentCenter;
-        toast.numberOfLines = 1;
-        toast.layer.cornerRadius = 18.0;
-        toast.layer.masksToBounds = YES;
-        toast.translatesAutoresizingMaskIntoConstraints = NO;
-        [window addSubview:toast];
-
-        [NSLayoutConstraint activateConstraints:@[
-            [toast.centerXAnchor constraintEqualToAnchor:window.centerXAnchor],
-            [toast.bottomAnchor constraintEqualToAnchor:window.safeAreaLayoutGuide.bottomAnchor constant:-26.0],
-            [toast.heightAnchor constraintEqualToConstant:36.0],
-            [toast.widthAnchor constraintGreaterThanOrEqualToConstant:150.0],
-            [toast.widthAnchor constraintLessThanOrEqualToAnchor:window.widthAnchor constant:-48.0]
-        ]];
-
-        toast.alpha = 0.0;
-        [UIView animateWithDuration:0.18 animations:^{
-            toast.alpha = 1.0;
-        } completion:^(BOOL finished) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                if (toast.superview) {
-                    [UIView animateWithDuration:0.2 animations:^{
-                        toast.alpha = 0.0;
-                    } completion:^(BOOL finished2) {
-                        [toast removeFromSuperview];
-                    }];
-                }
-            });
-        }];
-    });
 }
 
 static NSString *ZLCNMediaStoreLogPath(void) {
@@ -133,6 +77,20 @@ static void ZLCNCallOriginalMediaStoreUndo(IMP original,
     ((void (*)(id, SEL, id, BOOL, BOOL))original)(self, _cmd, messageId, isGroup, isOwnerRecall);
 }
 
+static NSString *ZLCNRecallSenderNameFromMessageId(id messageId) {
+    if (![messageId isKindOfClass:[NSDictionary class]]) return nil;
+    NSDictionary *dict = (NSDictionary *)messageId;
+    NSArray<NSString *> *keys = @[
+        @"senderName", @"sender_name", @"fromName", @"from_name",
+        @"userName", @"username", @"nickname", @"nickName"
+    ];
+    for (NSString *key in keys) {
+        id value = dict[key];
+        if ([value isKindOfClass:[NSString class]] && [(NSString *)value length] > 0) return value;
+    }
+    return nil;
+}
+
 static void ZLCNMediaStoreUndoReplacement(id self,
                                            SEL _cmd,
                                            id messageId,
@@ -149,26 +107,24 @@ static void ZLCNMediaStoreUndoReplacement(id self,
                       antiRecallEnabled ? @"YES" : @"NO",
                       showOwnRecalledMessage ? @"YES" : @"NO");
 
-    /* Incoming recall: preserve the existing anti-recall behavior. */
     if (!isOwnerRecall && antiRecallEnabled) {
         ZLCNMediaStoreUndoBlockedCount++;
         ZLCNMediaStoreLog(@"BLOCK MediaStoreUndo | remote recall | Class=%@ | blocked=%lu",
                           NSStringFromClass(object_getClass(self)),
                           (unsigned long)ZLCNMediaStoreUndoBlockedCount);
+        ZLCNShowRecallToast(NO, ZLCNRecallSenderNameFromMessageId(messageId));
         return;
     }
 
-    /* Own recall: optionally keep the message visible locally. */
     if (isOwnerRecall && showOwnRecalledMessage) {
         ZLCNMediaStoreUndoBlockedCount++;
         ZLCNMediaStoreLog(@"BLOCK MediaStoreUndo | own recall | keeping message visible | Class=%@ | blocked=%lu",
                           NSStringFromClass(object_getClass(self)),
                           (unsigned long)ZLCNMediaStoreUndoBlockedCount);
-        ZLCNShowOwnRecallToast();
+        ZLCNShowRecallToast(YES, nil);
         return;
     }
 
-    /* Default behavior for own recall remains unchanged. */
     ZLCNCallOriginalMediaStoreUndo(ZLCNOriginalMediaStoreUndoIMP,
                                    self,
                                    _cmd,
@@ -177,19 +133,15 @@ static void ZLCNMediaStoreUndoReplacement(id self,
                                    isOwnerRecall);
 }
 
-static void ZLCNInstallMediaStoreUndoHook(void) {
+static BOOL ZLCNTryInstallMediaStoreUndoHook(void) {
+    if (ZLCNOriginalMediaStoreUndoIMP) return YES;
+
     SEL sel = sel_registerName("proccessUndoInMediaStoreWithMessageId:isGroup:isOwnerRecall:");
     int classCount = objc_getClassList(NULL, 0);
-    if (classCount <= 0) {
-        ZLCNMediaStoreLog(@"MediaStoreUndo scan: no Objective-C classes");
-        return;
-    }
+    if (classCount <= 0) return NO;
 
     Class *classes = (__unsafe_unretained Class *)malloc(sizeof(Class) * (size_t)classCount);
-    if (!classes) {
-        ZLCNMediaStoreLog(@"MediaStoreUndo scan: class allocation failed");
-        return;
-    }
+    if (!classes) return NO;
 
     classCount = objc_getClassList(classes, classCount);
     NSUInteger matches = 0;
@@ -209,7 +161,6 @@ static void ZLCNInstallMediaStoreUndoHook(void) {
                           types ?: "(null)",
                           implementation);
 
-        /* ARM64 ObjC BOOL commonly encodes as 'c'; accept 'B' as well. */
         BOOL supported = types &&
             (strcmp(types, "v28@0:8@16c24c25") == 0 ||
              strcmp(types, "v28@0:8@16B24B25") == 0);
@@ -219,22 +170,60 @@ static void ZLCNInstallMediaStoreUndoHook(void) {
             continue;
         }
 
-        if (ZLCNOriginalMediaStoreUndoIMP) {
-            ZLCNMediaStoreLog(@"SKIP MEDIASTORE-UNDO | already installed");
-            continue;
-        }
+        if (ZLCNOriginalMediaStoreUndoIMP) break;
 
         ZLCNOriginalMediaStoreUndoIMP = implementation;
         method_setImplementation(method, (IMP)ZLCNMediaStoreUndoReplacement);
         installed++;
+        ZLCNMediaStoreLog(@"INSTALLED MEDIASTORE-UNDO | Class=%@ | SEL=%@ | Types=%s",
+                          NSStringFromClass(cls), NSStringFromSelector(sel), types);
+        break;
     }
 
     free(classes);
     ZLCNMediaStoreUndoHookCount = installed;
-    ZLCNMediaStoreLog(@"MediaStoreUndo scan complete | matches=%lu | installed=%lu | selector=%@",
+    ZLCNMediaStoreLog(@"MediaStoreUndo scan complete | matches=%lu | installed=%lu | attempt=%lu",
                       (unsigned long)matches,
                       (unsigned long)installed,
-                      NSStringFromSelector(sel));
+                      (unsigned long)ZLCNMediaStoreInstallAttempt);
+    return installed > 0 || ZLCNOriginalMediaStoreUndoIMP != NULL;
+}
+
+static void ZLCNScheduleMediaStoreRetry(void);
+
+static void ZLCNInstallMediaStoreUndoHook(void) {
+    if (ZLCNOriginalMediaStoreUndoIMP) return;
+
+    ZLCNMediaStoreInstallAttempt++;
+    BOOL installed = ZLCNTryInstallMediaStoreUndoHook();
+    if (installed) {
+        ZLCNMediaStoreInstallScheduled = NO;
+        return;
+    }
+
+    ZLCNScheduleMediaStoreRetry();
+}
+
+static void ZLCNScheduleMediaStoreRetry(void) {
+    if (ZLCNOriginalMediaStoreUndoIMP || ZLCNMediaStoreInstallScheduled) return;
+    if (ZLCNMediaStoreInstallAttempt >= 6) {
+        ZLCNMediaStoreLog(@"MediaStoreUndo retry stopped after %lu attempts", (unsigned long)ZLCNMediaStoreInstallAttempt);
+        return;
+    }
+
+    ZLCNMediaStoreInstallScheduled = YES;
+    static const NSTimeInterval delays[] = {0.25, 0.75, 1.5, 3.0, 5.0};
+    NSUInteger index = MIN((NSUInteger)5, ZLCNMediaStoreInstallAttempt);
+    NSTimeInterval delay = delays[index - 1];
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        ZLCNMediaStoreInstallScheduled = NO;
+        ZLCNInstallMediaStoreUndoHook();
+    });
+
+    ZLCNMediaStoreLog(@"MediaStoreUndo retry scheduled | delay=%.2fs | nextAttempt=%lu",
+                      delay,
+                      (unsigned long)(ZLCNMediaStoreInstallAttempt + 1));
 }
 
 __attribute__((constructor))
@@ -244,6 +233,8 @@ static void ZLCNMediaStoreRecallInit(void) {
         ZLCNMediaStoreLog(@"Anti-Recall preference=%@ | Show own recalled message=%@",
                           ZLCNMediaStoreAntiRecallEnabled() ? @"YES" : @"NO",
                           ZLCNShowOwnRecalledMessageEnabled() ? @"YES" : @"NO");
-        ZLCNInstallMediaStoreUndoHook();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ZLCNInstallMediaStoreUndoHook();
+        });
     }
 }
