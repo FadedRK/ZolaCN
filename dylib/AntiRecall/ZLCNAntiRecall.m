@@ -89,7 +89,9 @@ static void ZLCNScanRecallHandlers(void) {
     ZLCNDiagnosticReset();
 
     ZLCNLog(@"Starting runtime discovery");
+    ZLCNLog(@"Home=%@", NSHomeDirectory());
     ZLCNLog(@"Bundle=%@", [[NSBundle mainBundle] bundleIdentifier] ?: @"(null)");
+    ZLCNLog(@"Diagnostic=%@", ZLCNDiagnosticPath() ?: @"(unavailable)");
     ZLCNLog(@"No recall hook is installed in this diagnostic build");
 
     SEL recallSEL = sel_registerName("handleRecallMessageNotification:");
@@ -129,7 +131,6 @@ static void ZLCNScanRecallHandlers(void) {
     free(classes);
 
     ZLCNLog(@"Discovery complete | handleRecallMessageNotification:=%lu | undo=%lu | Anti-Recall=%@", (unsigned long)recallMatches, (unsigned long)undoMatches, ZLCNAntiRecallEnabled() ? @"YES" : @"NO");
-    ZLCNLog(@"Diagnostic file=%@", ZLCNDiagnosticPath() ?: @"(unavailable)");
 }
 
 void ZLCNInstallAntiRecall(void) {
@@ -141,6 +142,10 @@ void ZLCNInstallAntiRecall(void) {
 __attribute__((constructor))
 static void ZLCNAntiRecallInit(void) {
     @autoreleasepool {
+        NSString *path = ZLCNDiagnosticPath();
+        if (path.length) {
+            ZLCNDiagnosticAppend(@"=== Anti-Recall constructor entered ===");
+        }
         ZLCNInstallAntiRecall();
     }
 }
