@@ -60,3 +60,13 @@ void ZLCNInstallAntiRecall(void) {
         ZLCNScanRecallHandlers();
     });
 }
+
+__attribute__((constructor))
+static void ZLCNAntiRecallInit(void) {
+    @autoreleasepool {
+        if (![[NSUserDefaults standardUserDefaults] objectForKey:ZLCNPluginEnabledKey]) {
+            [[NSUserDefaults standardUserDefaults] setBool:YES forKey:ZLCNPluginEnabledKey];
+        }
+        ZLCNInstallAntiRecall();
+    }
+}
