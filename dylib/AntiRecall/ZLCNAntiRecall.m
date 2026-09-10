@@ -64,9 +64,6 @@ void ZLCNInstallAntiRecall(void) {
 __attribute__((constructor))
 static void ZLCNAntiRecallInit(void) {
     @autoreleasepool {
-        if (![[NSUserDefaults standardUserDefaults] objectForKey:ZLCNPluginEnabledKey]) {
-            [[NSUserDefaults standardUserDefaults] setBool:YES forKey:ZLCNPluginEnabledKey];
-        }
         ZLCNInstallAntiRecall();
     }
 }
