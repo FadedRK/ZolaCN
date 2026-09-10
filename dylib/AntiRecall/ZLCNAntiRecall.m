@@ -1,7 +1,9 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <stdarg.h>
 
 static NSString * const ZLCNAntiRecallKey = @"ZolaCNAntiRecallEnabled";
+static NSString * const ZLCNDiagnosticFileName = @"ZolaCN-AntiRecall.log";
 
 static BOOL ZLCNAntiRecallEnabled(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
@@ -9,28 +11,103 @@ static BOOL ZLCNAntiRecallEnabled(void) {
     return [defaults boolForKey:ZLCNAntiRecallKey];
 }
 
-static void ZLCNDescribeRecallMethod(Class cls, SEL sel) {
-    Method method = class_getInstanceMethod(cls, sel);
+static NSString *ZLCNDiagnosticPath(void) {
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    NSString *documents = paths.firstObject;
+    if (!documents.length) return nil;
+    return [documents stringByAppendingPathComponent:ZLCNDiagnosticFileName];
+}
+
+static void ZLCNDiagnosticReset(void) {
+    NSString *path = ZLCNDiagnosticPath();
+    if (!path.length) return;
+
+    BOOL pluginEnabled = YES;
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults objectForKey:@"ZolaCNPluginEnabled"]) {
+        pluginEnabled = [defaults boolForKey:@"ZolaCNPluginEnabled"];
+    }
+
+    NSString *header = [NSString stringWithFormat:@"===== ZolaCN Anti-Recall Diagnostic =====\n%@\nPlugin Enabled: %@\nAnti-Recall Enabled: %@\n\n", [NSDate date], pluginEnabled ? @"YES" : @"NO", ZLCNAntiRecallEnabled() ? @"YES" : @"NO"];
+    [header writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
+static void ZLCNDiagnosticAppend(NSString *line) {
+    NSString *path = ZLCNDiagnosticPath();
+    if (!path.length || !line.length) return;
+
+    NSString *record = [line stringByAppendingString:@"\n"];
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!handle) {
+        [record writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        return;
+    }
+
+    @try {
+        [handle seekToEndOfFile];
+        [handle writeData:[record dataUsingEncoding:NSUTF8StringEncoding]];
+        [handle closeFile];
+    } @catch (__unused NSException *exception) {
+        [handle closeFile];
+    }
+}
+
+static void ZLCNLog(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+
+    NSLog(@"[ZolaCN][AntiRecall] %@", message);
+    ZLCNDiagnosticAppend(message);
+}
+
+static Method ZLCNDirectMethod(Class cls, SEL sel) {
+    unsigned int count = 0;
+    Method *methods = class_copyMethodList(cls, &count);
+    Method result = NULL;
+    for (unsigned int i = 0; i < count; i++) {
+        if (method_getName(methods[i]) == sel) {
+            result = methods[i];
+            break;
+        }
+    }
+    free(methods);
+    return result;
+}
+
+static void ZLCNDescribeRecallMethod(Class cls, SEL sel, NSString *label) {
+    Method method = ZLCNDirectMethod(cls, sel);
     if (!method) return;
 
     const char *types = method_getTypeEncoding(method);
-    NSLog(@"[ZolaCN][AntiRecall] found %@ %@ types=%s", NSStringFromClass(cls), NSStringFromSelector(sel), types ?: "(null)");
+    IMP implementation = method_getImplementation(method);
+    ZLCNLog(@"FOUND %@ | Class=%@ | SEL=%@ | Types=%s | IMP=%p", label, NSStringFromClass(cls), NSStringFromSelector(sel), types ?: "(null)", implementation);
 }
 
 static void ZLCNScanRecallHandlers(void) {
+    ZLCNDiagnosticReset();
+
+    ZLCNLog(@"Starting runtime discovery");
+    ZLCNLog(@"Bundle=%@", [[NSBundle mainBundle] bundleIdentifier] ?: @"(null)");
+    ZLCNLog(@"No recall hook is installed in this diagnostic build");
+
     SEL recallSEL = sel_registerName("handleRecallMessageNotification:");
     SEL undoSEL = sel_registerName("proccessUndoInMediaStoreWithMessageId:isGroup:isOwnerRecall:");
 
     int classCount = objc_getClassList(NULL, 0);
     if (classCount <= 0) {
-        NSLog(@"[ZolaCN][AntiRecall] runtime class list unavailable");
+        ZLCNLog(@"Runtime class list unavailable");
         return;
     }
 
     Class *classes = (__unsafe_unretained Class *)malloc(sizeof(Class) * (size_t)classCount);
-    if (!classes) return;
-    classCount = objc_getClassList(classes, classCount);
+    if (!classes) {
+        ZLCNLog(@"Failed to allocate runtime class list (%d classes)", classCount);
+        return;
+    }
 
+    classCount = objc_getClassList(classes, classCount);
     NSUInteger recallMatches = 0;
     NSUInteger undoMatches = 0;
 
@@ -38,21 +115,21 @@ static void ZLCNScanRecallHandlers(void) {
         Class cls = classes[i];
         if (!cls) continue;
 
-        Method recallMethod = class_getInstanceMethod(cls, recallSEL);
-        if (recallMethod && class_getMethodImplementation(cls, recallSEL) != NULL) {
-            ZLCNDescribeRecallMethod(cls, recallSEL);
+        if (ZLCNDirectMethod(cls, recallSEL)) {
+            ZLCNDescribeRecallMethod(cls, recallSEL, @"RECALL");
             recallMatches++;
         }
 
-        Method undoMethod = class_getInstanceMethod(cls, undoSEL);
-        if (undoMethod && class_getMethodImplementation(cls, undoSEL) != NULL) {
-            ZLCNDescribeRecallMethod(cls, undoSEL);
+        if (ZLCNDirectMethod(cls, undoSEL)) {
+            ZLCNDescribeRecallMethod(cls, undoSEL, @"UNDO");
             undoMatches++;
         }
     }
 
     free(classes);
-    NSLog(@"[ZolaCN][AntiRecall] discovery complete: handleRecallMessageNotification:=%lu, undo=%lu, enabled=%@", (unsigned long)recallMatches, (unsigned long)undoMatches, ZLCNAntiRecallEnabled() ? @"YES" : @"NO");
+
+    ZLCNLog(@"Discovery complete | handleRecallMessageNotification:=%lu | undo=%lu | Anti-Recall=%@", (unsigned long)recallMatches, (unsigned long)undoMatches, ZLCNAntiRecallEnabled() ? @"YES" : @"NO");
+    ZLCNLog(@"Diagnostic file=%@", ZLCNDiagnosticPath() ?: @"(unavailable)");
 }
 
 void ZLCNInstallAntiRecall(void) {
