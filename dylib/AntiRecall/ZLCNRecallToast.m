@@ -3,19 +3,42 @@
 #import <QuartzCore/QuartzCore.h>
 #import "ZLCNRecallToast.h"
 
-static const NSInteger ZLCNRecallToastTag = 0x5A4F5254;
+static NSString *ZLCNRecallInlineText(BOOL isOwnerRecall, NSString *senderName) {
+    if (isOwnerRecall) return @"你撤回了一条消息";
+    if (senderName.length) return [NSString stringWithFormat:@"“%@”撤回了一条消息", senderName];
+    return @"对方撤回了一条消息";
+}
 
-static UIWindow *ZLCNRecallToastKeyWindow(void) {
+static void ZLCNWalkLabels(UIView *view, NSString *text) {
+    if (!view) return;
+    if ([view isKindOfClass:[UILabel class]]) {
+        UILabel *label = (UILabel *)view;
+        if ([label.text isEqualToString:@"消息被召回"]) {
+            label.text = text;
+            label.accessibilityValue = @"ZolaCNRecallMarker";
+        } else if ([label.attributedText.string isEqualToString:@"消息被召回"]) {
+            label.attributedText = [[NSAttributedString alloc] initWithString:text
+                                                                    attributes:@{
+                NSFontAttributeName: label.font ?: [UIFont systemFontOfSize:14.0],
+                NSForegroundColorAttributeName: label.textColor ?: UIColor.labelColor
+            }];
+            label.accessibilityValue = @"ZolaCNRecallMarker";
+        }
+    }
+    for (UIView *subview in view.subviews) {
+        ZLCNWalkLabels(subview, text);
+    }
+}
+
+static UIWindow *ZLCNRecallWindow(void) {
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if (![scene isKindOfClass:[UIWindowScene class]]) continue;
         for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            if (window.isHidden || window.alpha <= 0.01) continue;
-            if (window.isKeyWindow) return window;
+            if (!window.isHidden && window.alpha > 0.01 && window.isKeyWindow) return window;
         }
     }
-
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        if (!scene.isActive || ![scene isKindOfClass:[UIWindowScene class]]) continue;
         for (UIWindow *window in ((UIWindowScene *)scene).windows) {
             if (!window.isHidden && window.alpha > 0.01 && window.windowLevel == UIWindowLevelNormal) return window;
         }
@@ -23,76 +46,34 @@ static UIWindow *ZLCNRecallToastKeyWindow(void) {
     return nil;
 }
 
-static void ZLCNRemoveExistingRecallToasts(UIWindow *window) {
-    if (!window) return;
-    for (UIView *subview in [window.subviews copy]) {
-        if (subview.tag == ZLCNRecallToastTag) [subview removeFromSuperview];
-    }
-}
-
-void ZLCNShowRecallToast(BOOL isOwnerRecall, NSString *senderName) {
+static void ZLCNApplyInlineRecallMarker(BOOL isOwnerRecall, NSString *senderName) {
+    NSString *text = ZLCNRecallInlineText(isOwnerRecall, senderName);
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *window = ZLCNRecallToastKeyWindow();
-        if (!window) {
-            /* The key window can briefly disappear during scene transitions. Retry once. */
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                UIWindow *retryWindow = ZLCNRecallToastKeyWindow();
-                if (!retryWindow) return;
-                ZLCNShowRecallToast(isOwnerRecall, senderName);
-            });
-            return;
-        }
-
-        NSString *text = nil;
-        if (isOwnerRecall) {
-            text = @"你撤回了一条消息";
-        } else if (senderName.length) {
-            text = [NSString stringWithFormat:@"“%@”撤回了一条消息", senderName];
-        } else {
-            text = @"对方撤回了一条消息";
-        }
-
-        ZLCNRemoveExistingRecallToasts(window);
-
-        UILabel *toast = [[UILabel alloc] initWithFrame:CGRectZero];
-        toast.tag = ZLCNRecallToastTag;
-        toast.text = text;
-        toast.textColor = [UIColor whiteColor];
-        toast.backgroundColor = [UIColor colorWithWhite:0.15 alpha:0.94];
-        toast.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightMedium];
-        toast.textAlignment = NSTextAlignmentCenter;
-        toast.numberOfLines = 1;
-        toast.layer.cornerRadius = 18.0;
-        toast.layer.masksToBounds = YES;
-        toast.translatesAutoresizingMaskIntoConstraints = NO;
-        [window addSubview:toast];
-
-        [NSLayoutConstraint activateConstraints:@[
-            [toast.centerXAnchor constraintEqualToAnchor:window.centerXAnchor],
-            [toast.bottomAnchor constraintEqualToAnchor:window.safeAreaLayoutGuide.bottomAnchor constant:-24.0],
-            [toast.heightAnchor constraintEqualToConstant:36.0],
-            [toast.leadingAnchor constraintGreaterThanOrEqualToAnchor:window.leadingAnchor constant:24.0],
-            [toast.trailingAnchor constraintLessThanOrEqualToAnchor:window.trailingAnchor constant:-24.0],
-            [toast.widthAnchor constraintGreaterThanOrEqualToConstant:150.0]
-        ]];
-
-        toast.alpha = 0.0;
-        [UIView animateWithDuration:0.16 animations:^{
-            toast.alpha = 1.0;
-        } completion:^(BOOL finished) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                if (!toast.superview) return;
-                [UIView animateWithDuration:0.2 animations:^{
-                    toast.alpha = 0.0;
-                } completion:^(BOOL finished2) {
-                    [toast removeFromSuperview];
-                }];
-            });
-        }];
+        UIWindow *window = ZLCNRecallWindow();
+        if (!window) return;
+        ZLCNWalkLabels(window, text);
     });
 }
 
-/* Kept as a notification fallback for recall events that bypass the primary hooks. */
+void ZLCNShowRecallToast(BOOL isOwnerRecall, NSString *senderName) {
+    /* Kept API name for compatibility. The plugin now replaces Zalo's
+       inline "消息被召回" marker instead of showing a floating toast. */
+    NSString *text = ZLCNRecallInlineText(isOwnerRecall, senderName);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ZLCNApplyInlineRecallMarker(isOwnerRecall, senderName);
+
+        /* UI can be one transaction behind the recall notification. Retry a few
+           times, but never create a separate overlay/toast. */
+        static const NSTimeInterval delays[] = {0.08, 0.2, 0.45, 0.9};
+        for (NSUInteger i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[i] * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                ZLCNApplyInlineRecallMarker(isOwnerRecall, senderName);
+            });
+        }
+    });
+}
+
 __attribute__((constructor))
 static void ZLCNRecallToastInit(void) {
     @autoreleasepool {
@@ -103,6 +84,7 @@ static void ZLCNRecallToastInit(void) {
             NSDictionary *userInfo = notification.userInfo;
             id ownerValue = [userInfo isKindOfClass:[NSDictionary class]] ? userInfo[@"isOwnerRecall"] : nil;
             BOOL isOwnerRecall = [ownerValue respondsToSelector:@selector(boolValue)] ? [ownerValue boolValue] : NO;
+
             if (isOwnerRecall) {
                 if ([[NSUserDefaults standardUserDefaults] boolForKey:@"ZolaCNShowOwnRecalledMessageEnabled"]) {
                     ZLCNShowRecallToast(YES, nil);
@@ -124,6 +106,6 @@ static void ZLCNRecallToastInit(void) {
             }
             ZLCNShowRecallToast(NO, senderName);
         }];
-        NSLog(@"[ZolaCN][RecallToast] unified API + fallback observer installed");
+        NSLog(@"[ZolaCN][RecallToast] inline recall marker mode installed");
     }
 }
