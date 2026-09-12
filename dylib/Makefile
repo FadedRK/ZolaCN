@@ -11,3 +11,5 @@ ZolaCN_FRAMEWORKS = Foundation UIKit
 ZolaCN_LDFLAGS = -install_name @rpath/ZolaCN.dylib
 
 include $(THEOS_MAKE_PATH)/tweak.mk
+
+# inline recall marker build check
