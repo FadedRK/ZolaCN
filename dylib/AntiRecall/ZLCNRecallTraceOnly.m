@@ -21,8 +21,7 @@ static void ZLCNTraceWrite(NSString *format, ...) {
 
     if (!ZLCNTraceBuffer) ZLCNTraceBuffer = [NSMutableString string];
     ZLCNTraceSequence++;
-    NSString *line = [NSString stringWithFormat:@"%05lu | %@
-", (unsigned long)ZLCNTraceSequence, message];
+    NSString *line = [NSString stringWithFormat:@"%05lu | %@\n", (unsigned long)ZLCNTraceSequence, message];
     [ZLCNTraceBuffer appendString:line];
     if (ZLCNTraceBuffer.length > 120000) {
         [ZLCNTraceBuffer deleteCharactersInRange:NSMakeRange(0, ZLCNTraceBuffer.length - 100000)];
@@ -148,9 +147,7 @@ __attribute__((constructor))
 static void ZLCNRecallTraceInit(void) {
     @autoreleasepool {
         dispatch_async(dispatch_get_main_queue(), ^{
-            ZLCNTraceBuffer = [NSMutableString stringWithFormat:@"===== ZolaCN Recall Trace ONLY =====
-Home=%@
-", NSHomeDirectory()];
+            ZLCNTraceBuffer = [NSMutableString stringWithFormat:@"===== ZolaCN Recall Trace ONLY =====\nHome=%@\n", NSHomeDirectory()];
             [[NSFileManager defaultManager] removeItemAtPath:ZLCNTracePath() error:nil];
             ZLCNInstallNotificationObservers();
 
