@@ -49,6 +49,7 @@ static UIWindow *ZLCNRecallWindow(void) {
 }
 
 static void ZLCNApplyInlineRecallMarker(BOOL isOwnerRecall, NSString *senderName) {
+    NSString *text = ZLCNRecallInlineText(isOwnerRecall, senderName);
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *window = ZLCNRecallWindow();
         if (!window) return;
@@ -59,7 +60,6 @@ static void ZLCNApplyInlineRecallMarker(BOOL isOwnerRecall, NSString *senderName
 void ZLCNShowRecallToast(BOOL isOwnerRecall, NSString *senderName) {
     /* Kept API name for compatibility. The plugin now replaces Zalo's
        inline "消息被召回" marker instead of showing a floating toast. */
-    NSString *text = ZLCNRecallInlineText(isOwnerRecall, senderName);
     dispatch_async(dispatch_get_main_queue(), ^{
         ZLCNApplyInlineRecallMarker(isOwnerRecall, senderName);
 
