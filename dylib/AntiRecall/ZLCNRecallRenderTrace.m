@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#include <stdarg.h>
 
 static NSString * const ZLCNRenderTraceFile = @"ZolaCN-RecallRenderTrace.log";
 static NSUInteger ZLCNRenderTraceCount = 0;
@@ -46,9 +47,7 @@ static BOOL ZLCNIsRecallMarker(NSString *text) {
 static NSString *ZLCNViewInfo(UILabel *label) {
     NSString *superName = label.superview ? NSStringFromClass(label.superview.class) : @"(nil)";
     return [NSString stringWithFormat:@"label=%p class=%@ super=%@ frame=(%.1f,%.1f,%.1f,%.1f)",
-            label,
-            NSStringFromClass(label.class),
-            superName,
+            label, NSStringFromClass(label.class), superName,
             label.frame.origin.x, label.frame.origin.y, label.frame.size.width, label.frame.size.height];
 }
 
@@ -102,6 +101,19 @@ NSString *ZLCNRecallRenderTraceText(void) {
 
 void ZLCNRunRecallRenderTrace(void) {
     ZLCNRenderLog(@"Manual render trace requested.");
+}
+
+/* Existing settings diagnostics call these symbols. Keep them mapped to the render trace. */
+NSString *ZLCNAntiRecallDiagnosticFilePath(void) {
+    return ZLCNRecallRenderTraceFilePath();
+}
+
+NSString *ZLCNAntiRecallDiagnosticText(void) {
+    return ZLCNRecallRenderTraceText();
+}
+
+void ZLCNRunAntiRecallDiagnostic(void) {
+    ZLCNRunRecallRenderTrace();
 }
 
 __attribute__((constructor))
