@@ -176,3 +176,18 @@ Home=%@
         });
     }
 }
+
+
+/* Settings diagnostic compatibility for trace-only builds. */
+NSString *ZLCNAntiRecallDiagnosticFilePath(void) {
+    return ZLCNTracePath();
+}
+
+NSString *ZLCNAntiRecallDiagnosticText(void) {
+    NSString *text = [NSString stringWithContentsOfFile:ZLCNTracePath() encoding:NSUTF8StringEncoding error:nil];
+    return text.length ? text : @"TRACE ONLY: 尚未产生撤回调用记录。";
+}
+
+void ZLCNRunAntiRecallDiagnostic(void) {
+    ZLCNTraceWrite(@"Manual trace diagnostic requested.");
+}
