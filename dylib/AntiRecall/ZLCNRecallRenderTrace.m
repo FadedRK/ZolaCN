@@ -51,14 +51,18 @@ static NSString *ZLCNViewInfo(UILabel *label) {
             label.frame.origin.x, label.frame.origin.y, label.frame.size.width, label.frame.size.height];
 }
 
+static void ZLCNLogDeepStack(NSString *prefix) {
+    NSArray<NSString *> *stack = [NSThread callStackSymbols];
+    NSUInteger limit = MIN((NSUInteger)40, stack.count);
+    for (NSUInteger i = 0; i < limit; i++) {
+        ZLCNRenderLog(@"%@[%lu] %@", prefix, (unsigned long)i, stack[i]);
+    }
+}
+
 static void ZLCNRecallRenderTraceSetText(UILabel *self, SEL _cmd, NSString *text) {
     if (ZLCNIsRecallMarker(text)) {
         ZLCNRenderLog(@"SET TEXT | %@ | text=%@", ZLCNViewInfo(self), text);
-        NSArray<NSString *> *stack = [NSThread callStackSymbols];
-        NSUInteger limit = MIN((NSUInteger)10, stack.count);
-        for (NSUInteger i = 0; i < limit; i++) {
-            ZLCNRenderLog(@"STACK[%lu] %@", (unsigned long)i, stack[i]);
-        }
+        ZLCNLogDeepStack(@"STACK");
     }
     SEL alias = sel_registerName("zlc_trace_orig_label_setText:");
     void (*orig)(id, SEL, NSString *) = (void (*)(id, SEL, NSString *))[self methodForSelector:alias];
@@ -69,11 +73,7 @@ static void ZLCNRecallRenderTraceSetAttributedText(UILabel *self, SEL _cmd, NSAt
     NSString *text = attributedText.string;
     if (ZLCNIsRecallMarker(text)) {
         ZLCNRenderLog(@"SET ATTRIBUTED TEXT | %@ | text=%@", ZLCNViewInfo(self), text);
-        NSArray<NSString *> *stack = [NSThread callStackSymbols];
-        NSUInteger limit = MIN((NSUInteger)10, stack.count);
-        for (NSUInteger i = 0; i < limit; i++) {
-            ZLCNRenderLog(@"ATTR_STACK[%lu] %@", (unsigned long)i, stack[i]);
-        }
+        ZLCNLogDeepStack(@"ATTR_STACK");
     }
     SEL alias = sel_registerName("zlc_trace_orig_label_setAttributedText:");
     void (*orig)(id, SEL, NSAttributedString *) = (void (*)(id, SEL, NSAttributedString *))[self methodForSelector:alias];
@@ -90,31 +90,17 @@ static void ZLCNSwizzleLabelMethod(SEL sel, IMP replacement, SEL alias) {
     ZLCNRenderLog(@"HOOKED UILabel %@ | types=%s", NSStringFromSelector(sel), method_getTypeEncoding(method));
 }
 
-NSString *ZLCNRecallRenderTraceFilePath(void) {
-    return ZLCNRenderTracePath();
-}
+NSString *ZLCNRecallRenderTraceFilePath(void) { return ZLCNRenderTracePath(); }
 
 NSString *ZLCNRecallRenderTraceText(void) {
     NSString *text = [NSString stringWithContentsOfFile:ZLCNRenderTracePath() encoding:NSUTF8StringEncoding error:nil];
     return text.length ? text : @"TRACE: 尚未捕获到“消息被召回”的渲染。";
 }
 
-void ZLCNRunRecallRenderTrace(void) {
-    ZLCNRenderLog(@"Manual render trace requested.");
-}
-
-/* Existing settings diagnostics call these symbols. Keep them mapped to the render trace. */
-NSString *ZLCNAntiRecallDiagnosticFilePath(void) {
-    return ZLCNRecallRenderTraceFilePath();
-}
-
-NSString *ZLCNAntiRecallDiagnosticText(void) {
-    return ZLCNRecallRenderTraceText();
-}
-
-void ZLCNRunAntiRecallDiagnostic(void) {
-    ZLCNRunRecallRenderTrace();
-}
+void ZLCNRunRecallRenderTrace(void) { ZLCNRenderLog(@"Manual render trace requested."); }
+NSString *ZLCNAntiRecallDiagnosticFilePath(void) { return ZLCNRecallRenderTraceFilePath(); }
+NSString *ZLCNAntiRecallDiagnosticText(void) { return ZLCNRecallRenderTraceText(); }
+void ZLCNRunAntiRecallDiagnostic(void) { ZLCNRunRecallRenderTrace(); }
 
 __attribute__((constructor))
 static void ZLCNRecallRenderTraceInit(void) {
@@ -123,7 +109,7 @@ static void ZLCNRecallRenderTraceInit(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             ZLCNSwizzleLabelMethod(@selector(setText:), (IMP)ZLCNRecallRenderTraceSetText, sel_registerName("zlc_trace_orig_label_setText:"));
             ZLCNSwizzleLabelMethod(@selector(setAttributedText:), (IMP)ZLCNRecallRenderTraceSetAttributedText, sel_registerName("zlc_trace_orig_label_setAttributedText:"));
-            ZLCNRenderLog(@"TRACE ONLY: UILabel recall-marker render tracing enabled; no recall blocking and no UI replacement.");
+            ZLCNRenderLog(@"TRACE ONLY: deep UILabel recall-marker tracing enabled; no recall blocking and no UI replacement.");
         });
     }
 }
