@@ -38,7 +38,9 @@ static UIWindow *ZLCNRecallWindow(void) {
         }
     }
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (!scene.isActive || ![scene isKindOfClass:[UIWindowScene class]]) continue;
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+        if (windowScene.activationState != UISceneActivationStateForegroundActive && windowScene.activationState != UISceneActivationStateForegroundInactive) continue;
         for (UIWindow *window in ((UIWindowScene *)scene).windows) {
             if (!window.isHidden && window.alpha > 0.01 && window.windowLevel == UIWindowLevelNormal) return window;
         }
@@ -47,7 +49,6 @@ static UIWindow *ZLCNRecallWindow(void) {
 }
 
 static void ZLCNApplyInlineRecallMarker(BOOL isOwnerRecall, NSString *senderName) {
-    NSString *text = ZLCNRecallInlineText(isOwnerRecall, senderName);
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *window = ZLCNRecallWindow();
         if (!window) return;
