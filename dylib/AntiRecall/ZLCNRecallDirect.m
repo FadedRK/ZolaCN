@@ -26,8 +26,7 @@ static void ZLCNLog(NSString *format, ...) {
     va_end(args);
     NSLog(@"[ZolaCN][DirectRecall] %@", msg);
     NSString *old = [NSString stringWithContentsOfFile:ZLCNPath() encoding:NSUTF8StringEncoding error:nil] ?: @"";
-    NSString *line = [old stringByAppendingFormat:@"%@
-", msg];
+    NSString *line = [old stringByAppendingFormat:@"%@\n", msg];
     [line writeToFile:ZLCNPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
@@ -144,12 +143,9 @@ static void ZLCNInstall(void) {
 
 NSString *ZLCNAntiRecallDiagnosticText(void) {
     return [NSString stringWithFormat:
-            @"===== ZolaCN Direct Recall Diagnostic =====
-"
-            @"Coordinator=%@ | LocalCache=%@
-"
-            @"Blocked owner=%lu | Blocked remote=%lu | Passed=%lu
-"
+            @"===== ZolaCN Direct Recall Diagnostic =====\n"
+            @"Coordinator=%@ | LocalCache=%@\n"
+            @"Blocked owner=%lu | Blocked remote=%lu | Passed=%lu\n"
             @"Log=%@",
             ZLCNCoordinatorInstalled ? @"ON" : @"OFF",
             ZLCNLocalCacheInstalled ? @"ON" : @"OFF",
