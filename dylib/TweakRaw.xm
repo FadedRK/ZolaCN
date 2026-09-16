@@ -11,6 +11,42 @@ static NSDictionary *ZLCNTranslations;
 static NSUInteger ZLCNHitCount;
 static NSString * const ZLCNLanguageKey = @"ZolaCNLanguage";
 
+static NSDictionary *ZLCNTranslationOverrides(void) {
+    static NSDictionary *overrides;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        overrides = @{
+            @"Forward": @"转发",
+            @"Recall": @"撤回",
+            @"Recalled": @"已撤回",
+            @"Recall request": @"撤回请求",
+            @"Recalled message successfully": @"消息撤回成功",
+            @"Message recalled": @"消息已撤回",
+            @"Message recalled successfully": @"消息撤回成功",
+            @"Photo was recalled": @"照片已撤回",
+            @"This GIF was recalled": @"此 GIF 已撤回",
+            @"Video has been recalled": @"视频已撤回",
+            @"Video recalled successfully": @"视频撤回成功",
+            @"[Recalled message]": @"[撤回消息]",
+            @"recalled a message": @"撤回了一条消息",
+            @"Delete for everyone (Recall)": @"为所有人删除（撤回）",
+            @"Thu hồi": @"撤回",
+            @"Tin nhắn đã được thu hồi": @"消息已撤回",
+            @"GIF này đã bị thu hồi": @"此 GIF 已撤回",
+            @"Hình ảnh bị thu hồi": @"图片已撤回",
+            @"Chuyển tiếp": @"转发",
+            @"Block": @"屏蔽",
+            @"Mute": @"静音",
+            @"Archive": @"存档",
+            @"ARCHIVE": @"存档",
+            @"Unpin": @"取消置顶",
+            @"Unmute": @"取消静音"
+        };
+    });
+    return overrides;
+}
+
+
 static BOOL ZLCNValidString(NSString *s) {
     return [s isKindOfClass:[NSString class]] && s.length > 0 &&
            ![s isEqualToString:@"<null>"] && ![s isEqualToString:@"<Not Found>"];
@@ -63,6 +99,9 @@ static void ZLCNLoadTranslations(void) {
  */
 static NSString *ZLCNTranslate(NSString *s) {
     if (!ZLCNValidString(s)) return s;
+
+    NSString *override = ZLCNTranslationOverrides()[s];
+    if (override.length) return override;
 
     id entry = ZLCNTranslations[s];
     if (!entry) {
