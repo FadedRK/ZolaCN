@@ -2,36 +2,31 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-static void (*ZAROriginal)(id, SEL, id) = NULL;
+static void (*ZAROriginalUpdate)(id, SEL, id) = NULL;
 static BOOL ZARInstalled = NO;
 
 static id ZARGet(id obj, NSString *key) {
-    if (!obj) return nil;
+    if (!obj || !key) return nil;
     @try { return [obj valueForKey:key]; } @catch (__unused NSException *e) { return nil; }
 }
-
 static NSString *ZARString(id v) {
     if (!v || v == [NSNull null]) return nil;
     if ([v isKindOfClass:[NSString class]]) return v;
     @try { return [v stringValue]; } @catch (__unused NSException *e) { return nil; }
 }
-
 static BOOL ZARValid(NSString *s) {
     return s.length && ![s isEqualToString:@"<null>"] && ![s isEqualToString:@"<Not Found>"];
 }
-
 static BOOL ZARMyRecall(id entity) {
     id v = ZARGet(entity, @"_isRecallDelByMySelf");
     return [v respondsToSelector:@selector(boolValue)] && [v boolValue];
 }
-
 static NSString *ZARKey(id entity) {
     id mid = ZARGet(entity, @"messageId");
     NSString *s = ZARString(mid);
     if (!s.length) s = [mid description];
     return s.length ? [NSString stringWithFormat:@"ZAR.original.%@", s] : nil;
 }
-
 static void ZARRemember(id entity) {
     NSString *msg = ZARString(ZARGet(entity, @"message"));
     NSString *key = ZARKey(entity);
@@ -39,8 +34,7 @@ static void ZARRemember(id entity) {
     if ([msg isEqualToString:@"Message recalled"] || [msg isEqualToString:@"消息已撤回"] || [msg isEqualToString:@"Tin nhắn đã được thu hồi"]) return;
     [[NSUserDefaults standardUserDefaults] setObject:msg forKey:key];
 }
-
-static NSString *ZAROriginal(id entity) {
+static NSString *ZAROriginalMessage(id entity) {
     NSString *origin = ZARString(ZARGet(entity, @"originTextRecallMsg"));
     if (ZARValid(origin)) return origin;
     NSString *key = ZARKey(entity);
@@ -50,7 +44,6 @@ static NSString *ZAROriginal(id entity) {
     if (ZARValid(msg) && ![msg isEqualToString:@"Message recalled"] && ![msg isEqualToString:@"消息已撤回"] && ![msg isEqualToString:@"Tin nhắn đã được thu hồi"]) return msg;
     return nil;
 }
-
 static BOOL ZARSetMessage(id entity, NSString *msg) {
     if (!entity || !ZARValid(msg)) return NO;
     @try {
@@ -58,22 +51,20 @@ static BOOL ZARSetMessage(id entity, NSString *msg) {
         return [ZARString(ZARGet(entity, @"message")) isEqualToString:msg];
     } @catch (__unused NSException *e) { return NO; }
 }
-
-static BOOL ZARRich(id entity) {
+static BOOL ZARHasRichContent(id entity) {
     NSString *message = ZARString(ZARGet(entity, @"message"));
     if (ZARValid(message)) return YES;
     id rich = ZARGet(entity, @"richMsgNormal");
     if (rich && rich != [NSNull null] && ![rich isEqual:@"<null>"] && ![rich isEqual:@"<Not Found>"]) return YES;
     NSString *mediaId = ZARString(ZARGet(entity, @"mediaId"));
     if (ZARValid(mediaId)) return YES;
-    id mediaType = ZARGet(entity, @"mediatype");
-    NSInteger mt = [mediaType respondsToSelector:@selector(integerValue)] ? [mediaType integerValue] : [ZARString(mediaType) integerValue];
+    id mtValue = ZARGet(entity, @"mediatype");
+    NSInteger mt = [mtValue respondsToSelector:@selector(integerValue)] ? [mtValue integerValue] : [ZARString(mtValue) integerValue];
     return mt > 0;
 }
-
 static NSString *ZARTag(id entity) {
     NSString *lang = [[NSUserDefaults standardUserDefaults] stringForKey:@"ZolaAntiRecallLanguage"] ?: @"zh";
-    BOOL rich = ZARRich(entity);
+    BOOL rich = ZARHasRichContent(entity);
     if ([lang isEqualToString:@"vi"]) return rich ? @"【Nội dung đã bị thu hồi】" : @"【Đã bị thu hồi】";
     if ([lang isEqualToString:@"en"]) return rich ? @"[Content recalled]" : @"[Recalled]";
     return rich ? @"【内容已撤回】" : @"【已撤回】";
@@ -83,30 +74,23 @@ static void ZARUpdateUndo(id self, SEL _cmd, id entity) {
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     BOOL enabled = [d objectForKey:@"ZolaAntiRecallEnabled"] ? [d boolForKey:@"ZolaAntiRecallEnabled"] : YES;
     BOOL showMine = [d objectForKey:@"ZolaAntiRecallShowMyRecall"] ? [d boolForKey:@"ZolaAntiRecallShowMyRecall"] : YES;
-
     if (!entity || !enabled || !ZARMyRecall(entity) || !showMine) {
-        if (ZAROriginal) ZAROriginal(self, _cmd, entity);
+        if (ZAROriginalUpdate) ZAROriginalUpdate(self, _cmd, entity);
         return;
     }
-
-    // First invocation normally arrives with the original text. Save it before Zalo changes the entity.
     ZARRemember(entity);
-    NSString *original = ZAROriginal(entity);
+    NSString *original = ZAROriginalMessage(entity);
     if (!ZARValid(original)) {
-        if (ZAROriginal) ZAROriginal(self, _cmd, entity);
+        if (ZAROriginalUpdate) ZAROriginalUpdate(self, _cmd, entity);
         return;
     }
-
-    // Do not call Zalo's destructive recall-content mutation for self recall.
-    // On relaunch the same hook restores the cached text when the recalled entity is reconstructed.
     NSString *tag = ZARTag(entity);
     NSString *display = [original hasSuffix:tag] ? original : [NSString stringWithFormat:@"%@\n%@", original, tag];
     if (ZARSetMessage(entity, display)) {
         NSLog(@"[ZolaCN][AntiRecall] preserved self recall %@", ZARKey(entity));
         return;
     }
-
-    if (ZAROriginal) ZAROriginal(self, _cmd, entity);
+    if (ZAROriginalUpdate) ZAROriginalUpdate(self, _cmd, entity);
 }
 
 static void ZARInstall(void) {
@@ -116,7 +100,6 @@ static void ZARInstall(void) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ ZARInstall(); });
         return;
     }
-
     SEL sel = NSSelectorFromString(@"updateUndoMessageContent:");
     Class meta = object_getClass(cls);
     Method m = class_getInstanceMethod(meta, sel);
@@ -126,10 +109,9 @@ static void ZARInstall(void) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ ZARInstall(); });
         return;
     }
-
     IMP old = method_getImplementation(m);
     if (old == (IMP)ZARUpdateUndo) return;
-    ZAROriginal = (void (*)(id, SEL, id))old;
+    ZAROriginalUpdate = (void (*)(id, SEL, id))old;
     method_setImplementation(m, (IMP)ZARUpdateUndo);
     ZARInstalled = YES;
     NSLog(@"[ZolaCN][AntiRecall] installed UndoChatProcessor updateUndoMessageContent: (%@)", classMethod ? @"class" : @"instance");
