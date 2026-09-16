@@ -296,28 +296,58 @@ static void ZARUpdateUndo(id self, SEL _cmd, id entity) {
     BOOL enabled = [d objectForKey:@"ZolaAntiRecallEnabled"] ? [d boolForKey:@"ZolaAntiRecallEnabled"] : YES;
     BOOL showMine = [d objectForKey:@"ZolaAntiRecallShowMyRecall"] ? [d boolForKey:@"ZolaAntiRecallShowMyRecall"] : YES;
 
-    if (!entity || !enabled || !ZARMyRecall(entity) || !showMine) {
+    // Plugin disabled: always let Zalo run its native recall path unchanged.
+    if (!entity || !enabled) {
         if (ZAROriginalUpdate) ZAROriginalUpdate(self, _cmd, entity);
         return;
     }
 
-    ZARRemember(entity);
+    BOOL mine = ZARMyRecall(entity);
+
+    // Self recall is independently controlled by the self-recall switch.
+    if (mine && !showMine) {
+        if (ZAROriginalUpdate) ZAROriginalUpdate(self, _cmd, entity);
+        return;
+    }
+
+    /*
+     * IMPORTANT:
+     * Both self-recall and other-party recall must be intercepted here.
+     * For other-party recall, originTextRecallMsg is normally nil, so cache the
+     * BEFORE message first and use it as the source of truth.
+     */
+    NSString *beforeMessage = ZARString(ZARGet(entity, @"message"));
+    if (ZARRecallText(beforeMessage)) {
+        ZARRemember(entity);
+    }
+
     NSString *original = ZAROriginalMessage(entity);
     if (!ZARValid(original)) {
-        if (ZAROriginalUpdate) ZAROriginalUpdate(self, _cmd, entity);
+        // We cannot safely reconstruct the original payload. Preserve the entity
+        // only when Zalo has rich-content state; otherwise keep native behavior.
+        if (!ZARHasRichContent(entity)) {
+            if (ZAROriginalUpdate) ZAROriginalUpdate(self, _cmd, entity);
+        } else {
+            NSString *tag = ZARTag(entity);
+            if (!ZARSetMessage(entity, tag) && ZAROriginalUpdate) {
+                ZAROriginalUpdate(self, _cmd, entity);
+            }
+        }
         return;
     }
 
     NSString *tag = ZARTag(entity);
     NSString *display = [original hasSuffix:tag] ? original : [NSString stringWithFormat:@"%@\n%@", original, tag];
+
     if (ZARSetMessage(entity, display)) {
-        NSLog(@"[ZolaCN][AntiRecall] preserved self recall %@", ZARKey(entity));
+        NSLog(@"[ZolaCN][AntiRecall] preserved %@ recall %@", mine ? @"self" : @"other-party", ZARKey(entity));
         return;
     }
 
+    // If the message field cannot be written, do not leave the app in a partial
+    // state; fall back to Zalo's native implementation.
     if (ZAROriginalUpdate) ZAROriginalUpdate(self, _cmd, entity);
 }
-
 static void ZARInstall(void) {
     if (ZARInstalled) return;
     Class cls = NSClassFromString(@"UndoChatProcessor");
