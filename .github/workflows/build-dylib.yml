@@ -67,8 +67,20 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           TAG="v${VERSION}"
-          gh release create "$TAG" dist/ZolaCN.dylib \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "ZolaCN ${TAG}" \
-            --generate-notes
+
+          if [ "$VERSION" = "1.0.0" ]; then
+            for OLD_TAG in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName'); do
+              echo "Deleting old release: $OLD_TAG"
+              gh release delete "$OLD_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+            done
+          fi
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/ZolaCN.dylib --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" dist/ZolaCN.dylib \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "ZolaCN ${TAG}" \
+              --generate-notes
+          fi
