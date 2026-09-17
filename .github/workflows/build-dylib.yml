@@ -70,13 +70,16 @@ jobs:
 
           if [ "$VERSION" = "1.0.0" ]; then
             for OLD_TAG in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName'); do
-              echo "Deleting old release: $OLD_TAG"
-              gh release delete "$OLD_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+              if [ "$OLD_TAG" != "$TAG" ]; then
+                echo "Deleting old release: $OLD_TAG"
+                gh release delete "$OLD_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+              fi
             done
           fi
 
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/ZolaCN.dylib --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false
           else
             gh release create "$TAG" dist/ZolaCN.dylib \
               --repo "$GITHUB_REPOSITORY" \
