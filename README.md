@@ -23,6 +23,16 @@ ZolaCN is a modular iOS tweak for Zalo, focused on runtime Chinese localization 
 
 > The recall hook is runtime-dependent and should be verified against the target Zalo version. It is not guaranteed to work unchanged across future Zalo updates.
 
+## Download
+
+**Latest release:**
+
+[![GitHub Release](https://img.shields.io/github/v/release/FadedRK/ZolaCN?display_name=tag&label=Download)](https://github.com/FadedRK/ZolaCN/releases/latest)
+
+Download the latest `ZolaCN.dylib` from:
+
+**[GitHub Releases](https://github.com/FadedRK/ZolaCN/releases)**
+
 ## Install
 
 The public release artifact is `ZolaCN.dylib`.
@@ -69,7 +79,7 @@ ZolaCN/
 │   │   └── ZLCNLocalization.m       # translation + UIKit hooks
 │   ├── Recall/
 │   │   ├── ZARRecall.h
-│   │   └── ZARRecall.m               # recall interception/preservation
+│   │   └── ZARRecall.m              # recall interception/preservation
 │   ├── ZolaCN.plist                  # target bundle filter
 │   └── build_embed.py                # translation table embedding
 ├── Translations.plist                # translation source table
