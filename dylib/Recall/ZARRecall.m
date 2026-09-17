@@ -165,5 +165,5 @@ void ZARInstallRecallHook(void) {
     method_setImplementation(method, (IMP)ZARUpdateUndo);
     ZARInstalled = YES;
 
-    NSLog(@"[ZolaCN][Recall] installed UndoChatProcessor updateUndoMessageContent: (%@), encoding=%s", classMethod ? @"class" : @"instance", encoding ?: @"unknown");
+    NSLog(@"[ZolaCN][Recall] installed UndoChatProcessor updateUndoMessageContent: (%@), encoding=%s", classMethod ? @"class" : @"instance", encoding ? encoding : "unknown");
 }
