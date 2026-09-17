@@ -1,6 +1,6 @@
 # ZolaCN
 
-ZolaCN is a standalone iOS dynamic library that adds Chinese runtime localization to Zalo.
+ZolaCN is a standalone iOS dynamic library for Zalo that provides Chinese runtime localization and anti-recall support.
 
 ## Current Release — v1.0.0
 
@@ -14,11 +14,21 @@ vn.com.vng.zingalo
 
 ## Features
 
+### Chinese Localization
+
 - Runtime translation of Zalo UI text from Vietnamese/English to Chinese.
 - Translation table embedded directly into the dylib.
 - UIKit fallback hooks for labels, buttons, navigation items, tab items, search placeholders, and text-field placeholders.
 - Supports `arm64` and `arm64e`.
-- No Debian package is required.
+
+### Anti-Recall
+
+- Preserves the original message content when a recall event is processed and the original text is available.
+- Stores previously seen message text locally so it can be restored when Zalo replaces the content with a recall notice.
+- Displays the original message together with a recall indicator instead of only showing Zalo's default recall text.
+- Supports Chinese, English, and Vietnamese recall indicators.
+- Can be enabled/disabled through the runtime preference `ZolaAntiRecallEnabled`.
+- The anti-recall logic is implemented in `dylib/ZolaAntiRecall.m`.
 
 ## Install
 
@@ -27,7 +37,7 @@ vn.com.vng.zingalo
 3. Inject `ZolaCN.dylib`.
 4. Completely terminate Zalo and launch it again.
 
-The translation works at runtime, so the original Zalo resources do not need to be replaced.
+The translation and anti-recall features work at runtime, so the original Zalo resources do not need to be replaced.
 
 ## Build
 
@@ -58,4 +68,4 @@ ZolaCN/
 
 ## Notes
 
-v1.0.0 is the current stable public release. Translation coverage depends on the bundled table and the UI paths used by the current Zalo build. Some dynamically generated or non-standard UI text may require additional hooks in future releases.
+v1.0.0 is the current stable public release. Translation coverage depends on the bundled table and the UI paths used by the current Zalo build. Anti-recall behavior depends on Zalo's internal message model and recall processing path; dynamically generated or unsupported message types may require additional hooks in future releases.
