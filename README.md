@@ -2,9 +2,9 @@
 
 ZolaCN is a standalone iOS dynamic library that adds Chinese runtime localization to Zalo.
 
-## v1.0.0
+## Current Release — v1.0.0
 
-First public release.
+**Stable public release**
 
 The release artifact is **`ZolaCN.dylib`**. It is designed for use with **TrollStore + TrollFools** and targets Zalo's bundle identifier:
 
@@ -22,7 +22,7 @@ vn.com.vng.zingalo
 
 ## Install
 
-1. Download `ZolaCN.dylib` from the GitHub Release.
+1. Download **`ZolaCN.dylib`** from the [v1.0.0 Release](https://github.com/FadedRK/ZolaCN/releases/tag/v1.0.0).
 2. Open TrollFools and select Zalo.
 3. Inject `ZolaCN.dylib`.
 4. Completely terminate Zalo and launch it again.
@@ -43,10 +43,12 @@ ZolaCN.dylib
 
 ```text
 ZolaCN/
-├── .github/workflows/build-dylib.yml   # CI build + v1 release publishing
+├── .github/workflows/build-dylib.yml   # CI build + release publishing
+├── .gitattributes                      # GitHub language classification
 ├── dylib/
 │   ├── Makefile
 │   ├── TweakRaw.xm                     # runtime localization implementation
+│   ├── ZolaAntiRecall.m                # anti-recall implementation
 │   ├── ZolaCN.plist                    # target bundle filter
 │   └── build_embed.py                  # embeds translation table
 ├── Translations.plist                  # translation source table
@@ -56,4 +58,4 @@ ZolaCN/
 
 ## Notes
 
-This is the initial public version. Translation coverage depends on the bundled table and the UI paths used by the current Zalo build. Some dynamically generated or non-standard UI text may require additional hooks in future releases.
+v1.0.0 is the current stable public release. Translation coverage depends on the bundled table and the UI paths used by the current Zalo build. Some dynamically generated or non-standard UI text may require additional hooks in future releases.
