@@ -29,6 +29,10 @@ jobs:
           sdks-src: waruhachi/sdks
           sdks-branch: main
 
+      - name: Read version
+        id: version
+        run: echo "version=$(tr -d '\r\n ' < VERSION)" >> "$GITHUB_OUTPUT"
+
       - name: Embed translations into dylib
         run: python3 dylib/build_embed.py
 
@@ -39,7 +43,7 @@ jobs:
           mkdir -p dist
           DYLIB=$(find dylib/.theos -type f -name 'ZolaCN.dylib' | head -n 1)
           test -n "$DYLIB"
-          cp "$DYLIB" dist/ZolaCN.dylib
+          cp "$DYLIB" "dist/ZolaCN.dylib"
           file dist/ZolaCN.dylib
           ls -lh dist/ZolaCN.dylib
 
@@ -56,26 +60,15 @@ jobs:
           path: dist/ZolaCN.dylib
           retention-days: 30
 
-  release-v1:
-    needs: build-dylib
-    if: github.ref == 'refs/heads/main' && github.event.head_commit.message == 'Release ZolaCN v1.0.0'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download dylib artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ZolaCN-dylib
-          path: dist
-
-      - name: Publish GitHub release
+      - name: Publish latest release
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh release create v1.0.0 dist/ZolaCN.dylib \
+          TAG="v${VERSION}"
+          gh release create "$TAG" dist/ZolaCN.dylib \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "ZolaCN v1.0.0" \
-            --notes-file CHANGELOG.md
+            --title "ZolaCN ${TAG}" \
+            --generate-notes
