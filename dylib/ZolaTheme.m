@@ -183,7 +183,7 @@ static void ZTHApplyToController(UIViewController *vc) {
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? 3 : 3;
+    return section == 0 ? 3 : 4;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -222,11 +222,17 @@ static void ZTHApplyToController(UIViewController *vc) {
             sw.on = [d boolForKey:ZTHGlobalBackgroundKey];
             [sw addTarget:self action:@selector(globalChanged:) forControlEvents:UIControlEventValueChanged];
             cell.accessoryView = sw;
-        } else {
+        } else if (indexPath.row == 2) {
             cell.textLabel.text = ZTHText(@"顶栏透明", @"Transparent Top Bar", @"Thanh trên trong suốt");
             UISwitch *sw = [UISwitch new];
             sw.on = [d boolForKey:ZTHTopTransparentKey];
             [sw addTarget:self action:@selector(topChanged:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = sw;
+        } else {
+            cell.textLabel.text = ZTHText(@"底栏透明", @"Transparent Bottom Bar", @"Thanh dưới trong suốt");
+            UISwitch *sw = [UISwitch new];
+            sw.on = [d boolForKey:ZTHBottomTransparentKey];
+            [sw addTarget:self action:@selector(bottomChanged:) forControlEvents:UIControlEventValueChanged];
             cell.accessoryView = sw;
         }
     }
@@ -240,6 +246,11 @@ static void ZTHApplyToController(UIViewController *vc) {
 
 - (void)topChanged:(UISwitch *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:sender.on forKey:ZTHTopTransparentKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (void)bottomChanged:(UISwitch *)sender {
+    [[NSUserDefaults standardUserDefaults] setBool:sender.on forKey:ZTHBottomTransparentKey];
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
