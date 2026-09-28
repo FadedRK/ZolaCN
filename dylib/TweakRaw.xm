@@ -377,6 +377,8 @@ static void ZARInstall(void) {
 
 #pragma mark - Settings Entry
 
+extern void ZTHOpenSettings(UIViewController *presentingViewController);
+
 static NSInteger const ZARSettingsEntryTag = 0x5A415253;
 
 @interface ZARSettingsViewController : UITableViewController
@@ -408,7 +410,7 @@ static NSInteger const ZARSettingsEntryTag = 0x5A415253;
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 1; }
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return 3; }
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return 4; }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     NSString *lang = ZLCNLanguage();
@@ -450,6 +452,12 @@ static NSInteger const ZARSettingsEntryTag = 0x5A415253;
         sw.on = [[NSUserDefaults standardUserDefaults] objectForKey:@"ZolaAntiRecallShowMyRecall"] ? [[NSUserDefaults standardUserDefaults] boolForKey:@"ZolaAntiRecallShowMyRecall"] : YES;
         [sw addTarget:self action:@selector(myRecallSwitchChanged:) forControlEvents:UIControlEventValueChanged];
         cell.accessoryView = sw; _myRecallSwitch = sw;
+    } else if (indexPath.row == 2) {
+        if ([lang isEqualToString:@"vi"]) cell.textLabel.text = @"Chủ đề & giao diện";
+        else if ([lang isEqualToString:@"en"]) cell.textLabel.text = @"Themes & Appearance";
+        else cell.textLabel.text = @"主题美化";
+        cell.detailTextLabel.text = @"";
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     } else {
         if ([lang isEqualToString:@"vi"]) cell.textLabel.text = @"Ngôn ngữ giao diện";
         else if ([lang isEqualToString:@"en"]) cell.textLabel.text = @"Interface Language";
@@ -488,7 +496,11 @@ static NSInteger const ZARSettingsEntryTag = 0x5A415253;
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.row == 2) [self chooseLanguage];
+    if (indexPath.row == 2) {
+        ZTHOpenSettings(self);
+    } else if (indexPath.row == 3) {
+        [self chooseLanguage];
+    }
 }
 @end
 
