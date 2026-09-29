@@ -377,7 +377,7 @@ static void ZARInstall(void) {
 
 #pragma mark - Settings Entry
 
-extern void ZTHOpenSettings(UIViewController *presentingViewController);
+extern "C" void ZTHOpenSettings(UIViewController *presentingViewController);
 
 static NSInteger const ZARSettingsEntryTag = 0x5A415253;
 
