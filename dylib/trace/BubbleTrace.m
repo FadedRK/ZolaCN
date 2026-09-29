@@ -5,7 +5,7 @@
 static IMP BTOriginalImageViewSetImage = NULL;
 static IMP BTOriginalButtonSetImage = NULL;
 static IMP BTOriginalButtonSetBackgroundImage = NULL;
-static NSString * const BTLogPath = @"/var/mobile/Containers/Data/Application/Documents/BubbleTrace.log";
+static NSString *BTLogPath = nil;
 
 static void BTFile(NSString *format, ...) {
     va_list args;
