@@ -557,7 +557,7 @@ static void ZTHInstallBubbleCellHook(void) {
         originalIMP = method_getImplementation(layoutMethod);
     }
 
-    IMP replacement = imp_implementationWithBlock(^(__unsafe_unretained id object) {
+    IMP replacement = imp_implementationWithBlock(^(__unsafe_unretained id object, SEL _cmd) {
         if (originalIMP) {
             ((void (*)(id, SEL))originalIMP)(object,
                                              @selector(layoutSubviews));
