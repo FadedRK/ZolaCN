@@ -119,39 +119,260 @@ static void ZTHApplyBars(UIViewController *vc) {
     }
 }
 
-static void ZTHApplyBubbleImages(UIView *root) {
-    UIImage *mine = ZTHImageForKey(ZTHMyBubbleKey);
-    UIImage *other = ZTHImageForKey(ZTHOtherBubbleKey);
-    if (!mine && !other) return;
+static char kZTHOriginalBubbleImageKey;
+static char kZTHAppliedBubblePathKey;
 
-    NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
-    while (stack.count) {
+static UIImageView *ZTHFindResizableBubbleImageView(UIView *root) {
+    if (!root) {
+        return nil;
+    }
+
+    NSMutableArray<UIView *> *stack =
+        [NSMutableArray arrayWithObject:root];
+
+    while (stack.count > 0) {
         UIView *view = stack.lastObject;
         [stack removeLastObject];
 
-        for (UIView *sub in view.subviews) [stack addObject:sub];
-        if (!ZTHLooksLikeBubbleView(view)) continue;
-
-        NSString *name = NSStringFromClass(view.class).lowercaseString;
-        BOOL outgoing = [name containsString:@"outgoing"] || [name containsString:@"sender"] ||
-                        [name containsString:@"self"] || [name containsString:@"mine"];
-        UIImage *image = outgoing ? mine : other;
-        if (!image) continue;
-
-        UIImageView *overlay = (UIImageView *)[view viewWithTag:0x5A544248];
-        if (!overlay) {
-            overlay = [[UIImageView alloc] initWithFrame:view.bounds];
-            overlay.tag = 0x5A544248;
-            overlay.userInteractionEnabled = NO;
-            [view insertSubview:overlay atIndex:0];
+        for (UIView *subview in view.subviews) {
+            [stack addObject:subview];
         }
-        overlay.frame = view.bounds;
-        overlay.image = image;
-        overlay.contentMode = UIViewContentModeScaleToFill;
-        overlay.layer.cornerRadius = view.layer.cornerRadius;
-        overlay.clipsToBounds = YES;
+
+        if (![view isKindOfClass:[UIImageView class]]) {
+            continue;
+        }
+
+        UIImageView *imageView = (UIImageView *)view;
+        UIImage *image = imageView.image;
+
+        if (!image) {
+            continue;
+        }
+
+        NSString *imageClass =
+            NSStringFromClass(image.class);
+
+        if ([imageClass isEqualToString:@"_UIResizableImage"]) {
+            return imageView;
+        }
+    }
+
+    return nil;
+}
+
+static BOOL ZTHBubbleButtonIsOutgoing(UIView *button,
+                                      UIView *cell) {
+    if (!button || !cell) {
+        return NO;
+    }
+
+    CGRect rect =
+        [button.superview convertRect:button.frame
+                               toView:cell];
+
+    return CGRectGetMidX(rect) >
+           CGRectGetWidth(cell.bounds) * 0.5;
+}
+
+static UIImage *ZTHMakeResizableBubbleImage(UIImage *image) {
+    if (!image) {
+        return nil;
+    }
+
+    CGFloat width = image.size.width;
+    CGFloat height = image.size.height;
+
+    if (width <= 2.0 || height <= 2.0) {
+        return image;
+    }
+
+    CGFloat horizontal =
+        MIN(MAX(width * 0.25, 8.0), 32.0);
+
+    CGFloat vertical =
+        MIN(MAX(height * 0.25, 8.0), 32.0);
+
+    UIEdgeInsets insets =
+        UIEdgeInsetsMake(vertical,
+                         horizontal,
+                         vertical,
+                         horizontal);
+
+    return [image resizableImageWithCapInsets:insets
+                                  resizingMode:UIImageResizingModeStretch];
+}
+
+static void ZTHApplyBubbleToCell(UIView *cell) {
+    if (!cell) {
+        return;
+    }
+
+    UIImage *mine = ZTHImageForKey(ZTHMyBubbleKey);
+    UIImage *other = ZTHImageForKey(ZTHOtherBubbleKey);
+
+    if (!mine && !other) {
+        return;
+    }
+
+    NSMutableArray<UIView *> *stack =
+        [NSMutableArray arrayWithObject:cell];
+
+    while (stack.count > 0) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+
+        for (UIView *subview in view.subviews) {
+            [stack addObject:subview];
+        }
+
+        NSString *className =
+            NSStringFromClass(view.class).lowercaseString;
+
+        if (![className isEqualToString:@"submenubutton"]) {
+            continue;
+        }
+
+        UIImageView *imageView =
+            ZTHFindResizableBubbleImageView(view);
+
+        if (!imageView) {
+            continue;
+        }
+
+        BOOL outgoing =
+            ZTHBubbleButtonIsOutgoing(view, cell);
+
+        UIImage *replacement =
+            outgoing ? (mine ?: other)
+                     : (other ?: mine);
+
+        if (!replacement) {
+            continue;
+        }
+
+        NSString *path =
+            outgoing
+                ? [[NSUserDefaults standardUserDefaults]
+                    stringForKey:ZTHMyBubbleKey]
+                : [[NSUserDefaults standardUserDefaults]
+                    stringForKey:ZTHOtherBubbleKey];
+
+        if (path.length == 0) {
+            path =
+                [[NSUserDefaults standardUserDefaults]
+                    stringForKey:(outgoing
+                        ? ZTHOtherBubbleKey
+                        : ZTHMyBubbleKey)];
+        }
+
+        NSString *appliedPath =
+            objc_getAssociatedObject(imageView,
+                                     &kZTHAppliedBubblePathKey);
+
+        if (![appliedPath isEqualToString:path]) {
+            UIImage *original =
+                objc_getAssociatedObject(imageView,
+                                         &kZTHOriginalBubbleImageKey);
+
+            if (!original) {
+                objc_setAssociatedObject(
+                    imageView,
+                    &kZTHOriginalBubbleImageKey,
+                    imageView.image,
+                    OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+
+            UIImage *resizable =
+                ZTHMakeResizableBubbleImage(replacement);
+
+            imageView.image = resizable ?: replacement;
+
+            objc_setAssociatedObject(
+                imageView,
+                &kZTHAppliedBubblePathKey,
+                path,
+                OBJC_ASSOCIATION_COPY_NONATOMIC);
+        }
     }
 }
+
+static void ZTHRestoreBubblesInCell(UIView *cell) {
+    if (!cell) {
+        return;
+    }
+
+    NSMutableArray<UIView *> *stack =
+        [NSMutableArray arrayWithObject:cell];
+
+    while (stack.count > 0) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+
+        for (UIView *subview in view.subviews) {
+            [stack addObject:subview];
+        }
+
+        NSString *className =
+            NSStringFromClass(view.class).lowercaseString;
+
+        if (![className isEqualToString:@"submenubutton"]) {
+            continue;
+        }
+
+        UIImageView *imageView =
+            ZTHFindResizableBubbleImageView(view);
+
+        if (!imageView) {
+            continue;
+        }
+
+        UIImage *original =
+            objc_getAssociatedObject(imageView,
+                                     &kZTHOriginalBubbleImageKey);
+
+        if (original) {
+            imageView.image = original;
+            objc_setAssociatedObject(
+                imageView,
+                &kZTHAppliedBubblePathKey,
+                nil,
+                OBJC_ASSOCIATION_COPY_NONATOMIC);
+        }
+    }
+}
+
+static void ZTHApplyBubbleImages(UIView *root) {
+    if (!root) {
+        return;
+    }
+
+    UIImage *mine = ZTHImageForKey(ZTHMyBubbleKey);
+    UIImage *other = ZTHImageForKey(ZTHOtherBubbleKey);
+
+    NSMutableArray<UIView *> *stack =
+        [NSMutableArray arrayWithObject:root];
+
+    while (stack.count > 0) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+
+        for (UIView *subview in view.subviews) {
+            [stack addObject:subview];
+        }
+
+        NSString *name =
+            NSStringFromClass(view.class).lowercaseString;
+
+        if ([name isEqualToString:@"altextmessagetableitemcell"]) {
+            if (mine || other) {
+                ZTHApplyBubbleToCell(view);
+            } else {
+                ZTHRestoreBubblesInCell(view);
+            }
+        }
+    }
+}
+
 
 static void ZTHApplyToController(UIViewController *vc) {
     if (!vc) return;
@@ -310,6 +531,47 @@ static void ZTHViewDidLayoutSubviews(UIViewController *self, SEL _cmd) {
     }
 }
 
+static void ZTHInstallBubbleCellHook(void) {
+    Class cls = objc_getClass("ALTextMessageTableItemCell");
+
+    if (!cls) {
+        return;
+    }
+
+    static BOOL installed = NO;
+
+    if (installed) {
+        return;
+    }
+
+    Method layoutMethod =
+        class_getInstanceMethod(cls, @selector(layoutSubviews));
+
+    if (!layoutMethod) {
+        return;
+    }
+
+    static IMP originalIMP = NULL;
+
+    if (!originalIMP) {
+        originalIMP = method_getImplementation(layoutMethod);
+    }
+
+    IMP replacement = imp_implementationWithBlock(^(__unsafe_unretained id object) {
+        if (originalIMP) {
+            ((void (*)(id, SEL))originalIMP)(object,
+                                             @selector(layoutSubviews));
+        }
+
+        ZTHApplyBubbleToCell((UIView *)object);
+    });
+
+    method_setImplementation(layoutMethod, replacement);
+    installed = YES;
+
+    NSLog(@"[ZolaTheme] direct ALTextMessageTableItemCell bubble hook installed");
+}
+
 static void ZTHInstall(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -320,6 +582,8 @@ static void ZTHInstall(void) {
             method_setImplementation(appear, (IMP)ZTHViewDidAppear);
         }
 
+        ZTHInstallBubbleCellHook();
+
         Method layout = class_getInstanceMethod(UIViewController.class, @selector(viewDidLayoutSubviews));
         SEL layoutAlias = sel_registerName("zth_orig_viewDidLayoutSubviews");
         if (layout && !class_getInstanceMethod(UIViewController.class, layoutAlias)) {
@@ -327,6 +591,16 @@ static void ZTHInstall(void) {
             method_setImplementation(layout, (IMP)ZTHViewDidLayoutSubviews);
         }
     });
+
+    ZTHInstallBubbleCellHook();
+
+    for (NSInteger i = 0; i < 40; i++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                      (int64_t)(i * 0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            ZTHInstallBubbleCellHook();
+        });
+    }
 }
 
 void ZTHOpenSettings(UIViewController *presentingViewController) {
