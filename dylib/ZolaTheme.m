@@ -49,11 +49,6 @@ static BOOL ZTHLooksLikeChatController(UIViewController *vc) {
            [name containsString:@"message"] || [title containsString:@"chat"];
 }
 
-static BOOL ZTHLooksLikeBubbleView(UIView *view) {
-    NSString *name = NSStringFromClass(view.class).lowercaseString;
-    return [name containsString:@"bubble"] || [name containsString:@"messagecell"] ||
-           [name containsString:@"messagelayout"] || [name containsString:@"chatcell"];
-}
 
 
 static void ZTHApplyBackground(UIViewController *vc) {
