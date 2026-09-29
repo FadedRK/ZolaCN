@@ -47,11 +47,32 @@ jobs:
           file dist/ZolaCN.dylib
           ls -lh dist/ZolaCN.dylib
 
+      - name: Build BubbleTrace dylib
+        run: |
+          make -C dylib/trace clean
+          make -C dylib/trace
+          mkdir -p dist
+          TRACE=$(find dylib/trace/.theos -type f -name 'BubbleTrace.dylib' | head -n 1)
+          test -n "$TRACE"
+          cp "$TRACE" "dist/BubbleTrace.dylib"
+          file dist/BubbleTrace.dylib
+          ls -lh dist/BubbleTrace.dylib
+
       - name: Verify dylib
         run: |
           test -f dist/ZolaCN.dylib
+          test -f dist/BubbleTrace.dylib
           file dist/ZolaCN.dylib
+          file dist/BubbleTrace.dylib
           otool -hv dist/ZolaCN.dylib
+          otool -hv dist/BubbleTrace.dylib
+
+      - name: Upload BubbleTrace artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BubbleTrace-dylib
+          path: dist/BubbleTrace.dylib
+          retention-days: 30
 
       - name: Upload dylib artifact
         uses: actions/upload-artifact@v4
