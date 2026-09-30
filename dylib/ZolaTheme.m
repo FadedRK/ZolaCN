@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 static NSString * const ZTHMyBubbleKey = @"ZolaThemeMyBubblePath";
 static NSString * const ZTHOtherBubbleKey = @"ZolaThemeOtherBubblePath";
@@ -312,8 +313,7 @@ static void ZTHRetrySubMenuButtonHook(void) {
 
 - (void)pickImageFromFilesForKey:(NSString *)key fileName:(NSString *)fileName {
     UIDocumentPickerViewController *picker =
-        [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.image"]
-                                                                inMode:UIDocumentPickerModeImport];
+        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeImage]];
     picker.delegate = self;
     picker.allowsMultipleSelection = NO;
     objc_setAssociatedObject(picker, @selector(pickImageFromFilesForKey:fileName:),
