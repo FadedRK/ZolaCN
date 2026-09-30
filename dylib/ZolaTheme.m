@@ -90,13 +90,6 @@ static NSString *ZTHText(NSString *zh, NSString *en, NSString *vi) {
     return zh;
 }
 
-static BOOL ZTHLooksLikeChatController(UIViewController *vc) {
-    NSString *name = NSStringFromClass(vc.class).lowercaseString;
-    NSString *title = (vc.navigationItem.title ?: vc.title).lowercaseString;
-    return [name containsString:@"chat"] || [name containsString:@"conversation"] ||
-           [name containsString:@"message"] || [title containsString:@"chat"];
-}
-
 
 
 
