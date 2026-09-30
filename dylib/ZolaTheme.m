@@ -114,6 +114,109 @@ static void ZTHApplyBars(UIViewController *vc) {
     }
 }
 
+
+/*
+ * Zalo's real bubble resource layer.
+ *
+ * BubbleTrace proved that SubMenuButton receives a _UIResizableImage from
+ * -setBackgroundImage:forState:. The dumped Mach-O also exposes the
+ * CSSSkinManager bubble-image methods below. Hook this layer instead of
+ * rewriting cells/layouts, so Zalo keeps its own left/right/state/stretch
+ * logic.
+ */
+static UIImage *ZTHCustomBubbleForSelector(SEL sel, UIImage *original) {
+    if (!original) return nil;
+
+    NSString *name = NSStringFromSelector(sel);
+    BOOL right = [name containsString:@"Right"];
+    BOOL left = [name containsString:@"Left"];
+    BOOL selected = [name containsString:@"Selected"];
+
+    NSString *key = nil;
+    if (right || left) {
+        /*
+         * The selected variants are kept on the same custom image for now.
+         * Zalo still decides which selector/state is requested.
+         */
+        key = right ? ZTHMyBubbleKey : ZTHOtherBubbleKey;
+        if (selected && !ZTHImageForKey(key)) {
+            key = right ? ZTHOtherBubbleKey : ZTHMyBubbleKey;
+        }
+    }
+
+    UIImage *replacement = key ? ZTHImageForKey(key) : nil;
+    if (!replacement) return nil;
+
+    /*
+     * Preserve Zalo's stretch geometry. The object returned by
+     * CSSSkinManager is already a stretchable UIImage/_UIResizableImage,
+     * so use its capInsets and resizingMode rather than inventing insets.
+     */
+    UIEdgeInsets insets = original.capInsets;
+    UIImageResizingMode mode = original.resizingMode;
+    return [replacement resizableImageWithCapInsets:insets resizingMode:mode];
+}
+
+static id ZTHCSSSkinCallOriginal(id self, SEL alias) {
+    IMP imp = class_getMethodImplementation(object_getClass(self), alias);
+    if (!imp) return nil;
+    return ((id (*)(id, SEL))imp)(self, alias);
+}
+
+static id ZTHBubbleMethodHook(id self, SEL _cmd) {
+    SEL alias = sel_registerName("zth_orig_CSSSkinManager_bubble");
+    id original = ZTHCSSSkinCallOriginal(self, alias);
+    UIImage *replacement = ZTHCustomBubbleForSelector(_cmd, original);
+    return replacement ?: original;
+}
+
+static BOOL ZTHInstallCSSSkinMethodHook(SEL selector, const char *suffix) {
+    Class cls = objc_getClass("CSSSkinManager");
+    if (!cls) return NO;
+
+    Method method = class_getInstanceMethod(cls, selector);
+    if (!method) return NO;
+
+    NSString *aliasName =
+        [NSString stringWithFormat:@"zth_orig_CSSSkinManager_%s", suffix];
+    SEL alias = NSSelectorFromString(aliasName);
+    if (!class_getInstanceMethod(cls, alias)) {
+        class_addMethod(cls,
+                        alias,
+                        method_getImplementation(method),
+                        method_getTypeEncoding(method));
+    }
+
+    class_replaceMethod(cls,
+                        selector,
+                        (IMP)ZTHBubbleMethodHook,
+                        method_getTypeEncoding(method));
+    return YES;
+}
+
+static void ZTHInstallCSSSkinHooks(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char *selectors[] = {
+            "strechableLeftBubbleImageNormal",
+            "strechableRightBubbleImageNormal",
+            "strechableLeftBubbleImageSelected",
+            "strechableRightBubbleImageSelected",
+            "az_strechableLeftBubbleImageNormal",
+            "az_strechableRightBubbleImageNormal",
+            "az_strechableLeftBubbleImageSelected",
+            "az_strechableRightBubbleImageSelected"
+        };
+
+        for (NSUInteger i = 0; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
+            SEL sel = sel_registerName(selectors[i]);
+            ZTHInstallCSSSkinMethodHook(sel, selectors[i]);
+        }
+
+        NSLog(@"[ZolaTheme] CSSSkinManager bubble resource hooks installed");
+    });
+}
+
 static char kZTHOriginalBubbleImageKey;
 
 static UIImageView *ZTHFindResizableBubbleImageView(UIView *root) {
@@ -568,6 +671,7 @@ static void ZTHInstall(void) {
             method_setImplementation(appear, (IMP)ZTHViewDidAppear);
         }
 
+        ZTHInstallCSSSkinHooks();
         ZTHInstallBubbleHooks();
 
         Method layout = class_getInstanceMethod(UIViewController.class, @selector(viewDidLayoutSubviews));
@@ -578,12 +682,14 @@ static void ZTHInstall(void) {
         }
     });
 
+    ZTHInstallCSSSkinHooks();
     ZTHInstallBubbleHooks();
 
     for (NSInteger i = 0; i < 80; i++) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                       (int64_t)(i * 0.25 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
+            ZTHInstallCSSSkinHooks();
             ZTHInstallBubbleHooks();
             if (i % 4 == 0) ZTHApplyBubbleImagesToVisibleWindows();
         });
