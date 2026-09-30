@@ -179,7 +179,7 @@ static void ZTHRetrySubMenuButtonHook(void) {
     }
 }
 
-@interface ZTHSettingsViewController : UITableViewController
+@interface ZTHSettingsViewController : UITableViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate, UIDocumentPickerDelegate>
 @end
 
 @implementation ZTHSettingsViewController
@@ -268,27 +268,76 @@ static void ZTHRetrySubMenuButtonHook(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-- (void)pickImageForKey:(NSString *)key fileName:(NSString *)fileName {
-    UIImagePickerController *picker = [UIImagePickerController new];
-    picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
-    picker.mediaTypes = @[@"public.image"];
-    picker.allowsEditing = NO;
-    picker.delegate = (id<UINavigationControllerDelegate, UIImagePickerControllerDelegate>)self;
-    objc_setAssociatedObject(picker, @selector(pickImageForKey:fileName:), [@[key, fileName] copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [self presentViewController:picker animated:YES completion:nil];
-}
+- (void)importImage:(UIImage *)image key:(NSString *)key fileName:(NSString *)fileName {
+    if (!image || !key.length) return;
 
-- (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *)info {
-    UIImage *image = info[UIImagePickerControllerOriginalImage];
-    NSArray *args = objc_getAssociatedObject(picker, @selector(pickImageForKey:fileName:));
-    NSString *key = args.count > 0 ? args[0] : nil;
-    NSString *fileName = args.count > 1 ? args[1] : @"theme";
     NSString *path = ZTHCopyImage(image, fileName);
-    if (path && key) {
+    if (path) {
         [[NSUserDefaults standardUserDefaults] setObject:path forKey:key];
         [[NSUserDefaults standardUserDefaults] synchronize];
         ZTHReloadBubbleCache();
     }
+}
+
+- (void)pickImageFromPhotosForKey:(NSString *)key fileName:(NSString *)fileName {
+    UIImagePickerController *picker = [UIImagePickerController new];
+    picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
+    picker.mediaTypes = @[@"public.image"];
+    picker.allowsEditing = NO;
+    picker.delegate = self;
+    objc_setAssociatedObject(picker, @selector(pickImageFromPhotosForKey:fileName:),
+                             [@[key, fileName] copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)pickImageFromFilesForKey:(NSString *)key fileName:(NSString *)fileName {
+    UIDocumentPickerViewController *picker =
+        [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.image"]
+                                                                inMode:UIDocumentPickerModeImport];
+    picker.delegate = self;
+    picker.allowsMultipleSelection = NO;
+    objc_setAssociatedObject(picker, @selector(pickImageFromFilesForKey:fileName:),
+                             [@[key, fileName] copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)chooseImageSourceForKey:(NSString *)key fileName:(NSString *)fileName {
+    UIAlertController *alert =
+        [UIAlertController alertControllerWithTitle:ZTHText(@"导入气泡", @"Import Bubble", @"Nhập bong bóng")
+                                            message:nil
+                                     preferredStyle:UIAlertControllerStyleActionSheet];
+
+    [alert addAction:[UIAlertAction actionWithTitle:ZTHText(@"照片", @"Photos", @"Ảnh")
+                                               style:UIAlertActionStyleDefault
+                                             handler:^(__unused UIAlertAction *action) {
+        [self pickImageFromPhotosForKey:key fileName:fileName];
+    }]];
+
+    [alert addAction:[UIAlertAction actionWithTitle:ZTHText(@"文件", @"Files", @"Tệp")
+                                               style:UIAlertActionStyleDefault
+                                             handler:^(__unused UIAlertAction *action) {
+        [self pickImageFromFilesForKey:key fileName:fileName];
+    }]];
+
+    [alert addAction:[UIAlertAction actionWithTitle:ZTHText(@"取消", @"Cancel", @"Hủy")
+                                               style:UIAlertActionStyleCancel
+                                             handler:nil]];
+
+    alert.popoverPresentationController.sourceView = self.view;
+    alert.popoverPresentationController.sourceRect =
+        CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMaxY(self.view.bounds) - 40.0, 1.0, 1.0);
+
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)imagePickerController:(UIImagePickerController *)picker
+didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *)info {
+    UIImage *image = info[UIImagePickerControllerOriginalImage];
+    NSArray *args = objc_getAssociatedObject(picker, @selector(pickImageFromPhotosForKey:fileName:));
+    NSString *key = args.count > 0 ? args[0] : nil;
+    NSString *fileName = args.count > 1 ? args[1] : @"theme";
+
+    [self importImage:image key:key fileName:fileName];
     [picker dismissViewControllerAnimated:YES completion:nil];
 }
 
@@ -296,11 +345,34 @@ static void ZTHRetrySubMenuButtonHook(void) {
     [picker dismissViewControllerAnimated:YES completion:nil];
 }
 
+- (void)documentPicker:(UIDocumentPickerViewController *)controller
+didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    if (!urls.count) return;
+
+    NSURL *url = urls.firstObject;
+    BOOL secured = [url startAccessingSecurityScopedResource];
+
+    NSData *data = [NSData dataWithContentsOfURL:url];
+    UIImage *image = [UIImage imageWithData:data];
+
+    NSArray *args = objc_getAssociatedObject(controller, @selector(pickImageFromFilesForKey:fileName:));
+    NSString *key = args.count > 0 ? args[0] : nil;
+    NSString *fileName = args.count > 1 ? args[1] : @"theme";
+
+    [self importImage:image key:key fileName:fileName];
+
+    if (secured) [url stopAccessingSecurityScopedResource];
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    (void)controller;
+}
+
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == 0) {
-        if (indexPath.row == 0) [self pickImageForKey:ZTHMyBubbleKey fileName:@"my_bubble"];
-        else if (indexPath.row == 1) [self pickImageForKey:ZTHOtherBubbleKey fileName:@"other_bubble"];
+        if (indexPath.row == 0) [self chooseImageSourceForKey:ZTHMyBubbleKey fileName:@"my_bubble"];
+        else if (indexPath.row == 1) [self chooseImageSourceForKey:ZTHOtherBubbleKey fileName:@"other_bubble"];
         else {
             [[NSUserDefaults standardUserDefaults] removeObjectForKey:ZTHMyBubbleKey];
             [[NSUserDefaults standardUserDefaults] removeObjectForKey:ZTHOtherBubbleKey];
@@ -309,7 +381,7 @@ static void ZTHRetrySubMenuButtonHook(void) {
             [tableView reloadData];
         }
     } else if (indexPath.row == 0) {
-        [self pickImageForKey:ZTHBackgroundKey fileName:@"chat_background"];
+        [self chooseImageSourceForKey:ZTHBackgroundKey fileName:@"chat_background"];
     }
 }
 
