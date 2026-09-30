@@ -363,7 +363,7 @@ static void ZTHInstallCSSSkinHooks(void) {
         [[NSUserDefaults standardUserDefaults] synchronize];
         ZTHReloadBubbleCache();
     }
-    [picker dismissViewControllerAnimated:YES completion:nil);
+    [picker dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
@@ -389,30 +389,12 @@ static void ZTHInstallCSSSkinHooks(void) {
 
 @end
 
-static void ZTHViewDidAppear(UIViewController *self, SEL _cmd, BOOL animated) {
-    SEL alias = sel_registerName("zth_orig_viewDidAppear:");
-    void (*orig)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))[self methodForSelector:alias];
-    if (orig) orig(self, alias, animated);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        ZTHApplyToController(self);
-    });
-}
-
 static void ZTHInstall(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        Method appear = class_getInstanceMethod(UIViewController.class, @selector(viewDidAppear:));
-        SEL appearAlias = sel_registerName("zth_orig_viewDidAppear:");
-        if (appear && !class_getInstanceMethod(UIViewController.class, appearAlias)) {
-            class_addMethod(UIViewController.class, appearAlias, method_getImplementation(appear), method_getTypeEncoding(appear));
-            method_setImplementation(appear, (IMP)ZTHViewDidAppear);
-        }
-
         ZTHInstallCSSSkinHooks();
+        ZTHReloadBubbleCache();
     });
-
-    ZTHInstallCSSSkinHooks();
-    ZTHReloadBubbleCache();
 }
 
 void ZTHOpenSettings(UIViewController *presentingViewController) {
