@@ -188,8 +188,6 @@ static void ZTHInstallSubMenuButtonHook(void) {
     NSLog(@"[ZolaTheme] SubMenuButton setBackgroundImage hook installed");
 }
 
-static void ZTHInstallBottomTransparencyHook(void);
-
 static void ZTHRetrySubMenuButtonHook(void) {
     ZTHInstallSubMenuButtonHook();
     for (NSUInteger i = 1; i <= 12; i++) {
