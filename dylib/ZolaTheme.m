@@ -398,15 +398,6 @@ static void ZTHViewDidAppear(UIViewController *self, SEL _cmd, BOOL animated) {
     });
 }
 
-static void ZTHViewDidLayoutSubviews(UIViewController *self, SEL _cmd) {
-    SEL alias = sel_registerName("zth_orig_viewDidLayoutSubviews");
-    void (*orig)(id, SEL) = (void (*)(id, SEL))[self methodForSelector:alias];
-    if (orig) orig(self, alias);
-    if (ZTHLooksLikeChatController(self)) {
-        dispatch_async(dispatch_get_main_queue(), ^{ ZTHApplyToController(self); });
-    }
-}
-
 static void ZTHInstall(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -418,19 +409,10 @@ static void ZTHInstall(void) {
         }
 
         ZTHInstallCSSSkinHooks();
-
-        Method layout = class_getInstanceMethod(UIViewController.class, @selector(viewDidLayoutSubviews));
-        SEL layoutAlias = sel_registerName("zth_orig_viewDidLayoutSubviews");
-        if (layout && !class_getInstanceMethod(UIViewController.class, layoutAlias)) {
-            class_addMethod(UIViewController.class, layoutAlias, method_getImplementation(layout), method_getTypeEncoding(layout));
-            method_setImplementation(layout, (IMP)ZTHViewDidLayoutSubviews);
-        }
     });
 
     ZTHInstallCSSSkinHooks();
     ZTHReloadBubbleCache();
-
-    /* Bubble replacement is resource-level; no periodic view/window traversal. */
 }
 
 void ZTHOpenSettings(UIViewController *presentingViewController) {
