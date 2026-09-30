@@ -26,25 +26,51 @@ static void ZTHReloadBubbleCache(void) {
     ZTHCachedOtherBubble = other;
 
     /*
-     * These are intentionally conservative stretch regions. The center
-     * portion expands horizontally while the decorative border stays intact.
-     * Keep the source image in memory so scrolling never decodes PNG files.
+     * Nine-slice the bubble asymmetrically.
+     *
+     * The old symmetric 30~45% cap region could put the decorative tail
+     * inside the stretchable center. That caused the tail/border to smear
+     * when Zalo expanded the background for longer messages.
+     *
+     * Preserve a larger side cap on the tail side:
+     *   my/Right bubble  -> preserve more pixels on the RIGHT
+     *   other/Left bubble -> preserve more pixels on the LEFT
+     *
+     * Only the clean center area is allowed to stretch horizontally.
      */
-    if (my && my.size.width > 4.0 && my.size.height > 4.0) {
-        CGFloat x = MIN(MAX(my.size.width * 0.30, 12.0), my.size.width * 0.45);
-        CGFloat y = MIN(MAX(my.size.height * 0.30, 10.0), my.size.height * 0.45);
+    if (my && my.size.width > 8.0 && my.size.height > 8.0) {
+        CGFloat left = MAX(6.0, my.size.width * 0.18);
+        CGFloat right = MAX(10.0, my.size.width * 0.34);
+        CGFloat top = MAX(6.0, my.size.height * 0.22);
+        CGFloat bottom = MAX(6.0, my.size.height * 0.22);
+
+        CGFloat maxHorizontal = my.size.width - 2.0;
+        if (left + right >= maxHorizontal) {
+            left = my.size.width * 0.20;
+            right = my.size.width * 0.25;
+        }
+
         ZTHCachedMyBubbleResizable =
-            [my resizableImageWithCapInsets:UIEdgeInsetsMake(y, x, y, x)
+            [my resizableImageWithCapInsets:UIEdgeInsetsMake(top, left, bottom, right)
                                 resizingMode:UIImageResizingModeStretch];
     } else {
         ZTHCachedMyBubbleResizable = my;
     }
 
-    if (other && other.size.width > 4.0 && other.size.height > 4.0) {
-        CGFloat x = MIN(MAX(other.size.width * 0.30, 12.0), other.size.width * 0.45);
-        CGFloat y = MIN(MAX(other.size.height * 0.30, 10.0), other.size.height * 0.45);
+    if (other && other.size.width > 8.0 && other.size.height > 8.0) {
+        CGFloat left = MAX(10.0, other.size.width * 0.34);
+        CGFloat right = MAX(6.0, other.size.width * 0.18);
+        CGFloat top = MAX(6.0, other.size.height * 0.22);
+        CGFloat bottom = MAX(6.0, other.size.height * 0.22);
+
+        CGFloat maxHorizontal = other.size.width - 2.0;
+        if (left + right >= maxHorizontal) {
+            left = other.size.width * 0.25;
+            right = other.size.width * 0.20;
+        }
+
         ZTHCachedOtherBubbleResizable =
-            [other resizableImageWithCapInsets:UIEdgeInsetsMake(y, x, y, x)
+            [other resizableImageWithCapInsets:UIEdgeInsetsMake(top, left, bottom, right)
                                    resizingMode:UIImageResizingModeStretch];
     } else {
         ZTHCachedOtherBubbleResizable = other;
@@ -91,27 +117,41 @@ static NSString *ZTHText(NSString *zh, NSString *en, NSString *vi) {
  * We deliberately do NOT scan cells/windows or change layout. The hook only
  * runs when Zalo itself assigns a bubble background image to SubMenuButton.
  */
-static UIImage *ZTHBubbleReplacementForSubMenuButton(UIImage *original, UIControlState state) {
+static UIImage *ZTHBubbleReplacementForSubMenuButton(id button,
+                                                            UIImage *original,
+                                                            UIControlState state) {
     if (!original) return nil;
 
     /*
-     * BubbleTrace showed the normal bubble arriving as _UIResizableImage.
-     * Keep the replacement cached in memory and preserve Zalo's state call.
-     * State 0/1 are both handled; unknown states fall back to the normal
-     * custom image instead of touching Zalo's original image.
+     * Work out which side of the chat this button belongs to from its nearest
+     * message-cell container. This is only a parent lookup during the exact
+     * image assignment call; it does not scan the window or alter layout.
      */
-    if (state & UIControlStateHighlighted) {
-        return ZTHCachedMyBubbleResizable ?: ZTHCachedOtherBubbleResizable;
+    UIView *view = [button isKindOfClass:[UIView class]] ? button : nil;
+    UIView *cell = nil;
+
+    for (UIView *v = view; v && v.superview; v = v.superview) {
+        if ([NSStringFromClass(v.class) isEqualToString:@"ALTextMessageTableItemCell"]) {
+            cell = v;
+            break;
+        }
+    }
+
+    BOOL myBubble = YES;
+    if (cell && view) {
+        CGPoint p = [view.superview convertPoint:view.center toView:cell];
+        myBubble = p.x > CGRectGetMidX(cell.bounds);
     }
 
     /*
-     * The same SubMenuButton class is used by both sides. We distinguish
-     * direction from the original bubble's image orientation when possible;
-     * otherwise use the configured custom image consistently.
+     * Selected/highlighted states use the same directional artwork. The
+     * original state is preserved by passing the replacement through Zalo's
+     * own setBackgroundImage:forState: call.
      */
-    if (ZTHCachedMyBubbleResizable) return ZTHCachedMyBubbleResizable;
-    if (ZTHCachedOtherBubbleResizable) return ZTHCachedOtherBubbleResizable;
-    return nil;
+    (void)state;
+    return myBubble
+        ? ZTHCachedMyBubbleResizable
+        : ZTHCachedOtherBubbleResizable;
 }
 
 static void ZTHSubMenuButtonSetBackgroundImage(id self, SEL _cmd, UIImage *image, UIControlState state) {
@@ -120,7 +160,7 @@ static void ZTHSubMenuButtonSetBackgroundImage(id self, SEL _cmd, UIImage *image
     UIImage *replacement = nil;
 
     if (cls && [self isKindOfClass:cls]) {
-        replacement = ZTHBubbleReplacementForSubMenuButton(image, state);
+        replacement = ZTHBubbleReplacementForSubMenuButton(self, image, state);
     }
 
     IMP imp = class_getMethodImplementation(cls, alias);
