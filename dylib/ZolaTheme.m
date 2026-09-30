@@ -249,53 +249,103 @@ static void ZTHApplyBottomTransparencyToToolbar(UIView *toolbar) {
     }
 }
 
+static void ZTHApplyBottomTransparencyToTabBar(UITabBar *bar) {
+    if (!bar) return;
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) return;
+
+    UIView *background = nil;
+    for (UIView *subview in bar.subviews) {
+        if ([NSStringFromClass(subview.class) isEqualToString:@"_UIBarBackground"]) {
+            background = subview;
+            break;
+        }
+    }
+    if (!background) return;
+
+    background.backgroundColor = UIColor.clearColor;
+    background.opaque = NO;
+
+    for (UIView *child in background.subviews) {
+        if ([child isKindOfClass:[UIImageView class]]) {
+            child.alpha = 0.0;
+            child.backgroundColor = UIColor.clearColor;
+            child.opaque = NO;
+        }
+    }
+
+    bar.backgroundColor = UIColor.clearColor;
+    bar.opaque = NO;
+    bar.translucent = YES;
+}
+
+static void ZTHApplyBottomTransparencyToToolbar(UIView *toolbar) {
+    if (!toolbar) return;
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) return;
+
+    toolbar.backgroundColor = UIColor.clearColor;
+    toolbar.opaque = NO;
+}
+
+static void ZTHScheduleTabBarApply(UITabBar *bar) {
+    if (!bar) return;
+    ZTHApplyBottomTransparencyToTabBar(bar);
+
+    const NSTimeInterval delays[] = {0.05, 0.2, 0.5, 1.0, 2.0};
+    for (NSUInteger i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
+        NSTimeInterval delay = delays[i];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (bar.window) ZTHApplyBottomTransparencyToTabBar(bar);
+        });
+    }
+}
+
 static void ZTHInstallBottomTransparencyHooks(void) {
-    static BOOL installed = NO;
-    if (installed) return;
-
-    Class tabBarClass = objc_getClass("UITabBar");
-    if (tabBarClass) {
-        SEL sel = @selector(didMoveToWindow);
-        Method method = class_getInstanceMethod(tabBarClass, sel);
-        if (method) {
-            const char *types = method_getTypeEncoding(method);
-            IMP original = method_getImplementation(method);
-            SEL alias = sel_registerName("zth_orig_UITabBar_didMoveToWindow");
-            if (!class_getInstanceMethod(tabBarClass, alias)) {
-                class_addMethod(tabBarClass, alias, original, types);
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class tabBarClass = objc_getClass("UITabBar");
+        if (tabBarClass) {
+            SEL sel = @selector(didMoveToWindow);
+            Method method = class_getInstanceMethod(tabBarClass, sel);
+            if (method) {
+                const char *types = method_getTypeEncoding(method);
+                IMP original = method_getImplementation(method);
+                SEL alias = sel_registerName("zth_orig_UITabBar_didMoveToWindow");
+                if (!class_getInstanceMethod(tabBarClass, alias)) {
+                    class_addMethod(tabBarClass, alias, original, types);
+                }
+                class_replaceMethod(tabBarClass, sel, imp_implementationWithBlock(^(id self) {
+                    IMP imp = class_getMethodImplementation(tabBarClass, alias);
+                    if (imp) ((void (*)(id, SEL))imp)(self, alias);
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        ZTHScheduleTabBarApply((UITabBar *)self);
+                    });
+                }), types);
             }
-            class_replaceMethod(tabBarClass, sel, imp_implementationWithBlock(^(id self) {
-                IMP imp = class_getMethodImplementation(tabBarClass, alias);
-                if (imp) ((void (*)(id, SEL))imp)(self, alias);
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    ZTHApplyBottomTransparencyToTabBar((UITabBar *)self);
-                });
-            }), types);
         }
-    }
 
-    Class toolbarClass = objc_getClass("KBToolbarView");
-    if (toolbarClass) {
-        SEL sel = @selector(didMoveToWindow);
-        Method method = class_getInstanceMethod(toolbarClass, sel);
-        if (method) {
-            const char *types = method_getTypeEncoding(method);
-            IMP original = method_getImplementation(method);
-            SEL alias = sel_registerName("zth_orig_KBToolbarView_didMoveToWindow");
-            if (!class_getInstanceMethod(toolbarClass, alias)) {
-                class_addMethod(toolbarClass, alias, original, types);
+        Class toolbarClass = objc_getClass("KBToolbarView");
+        if (toolbarClass) {
+            SEL sel = @selector(didMoveToWindow);
+            Method method = class_getInstanceMethod(toolbarClass, sel);
+            if (method) {
+                const char *types = method_getTypeEncoding(method);
+                IMP original = method_getImplementation(method);
+                SEL alias = sel_registerName("zth_orig_KBToolbarView_didMoveToWindow");
+                if (!class_getInstanceMethod(toolbarClass, alias)) {
+                    class_addMethod(toolbarClass, alias, original, types);
+                }
+                class_replaceMethod(toolbarClass, sel, imp_implementationWithBlock(^(id self) {
+                    IMP imp = class_getMethodImplementation(toolbarClass, alias);
+                    if (imp) ((void (*)(id, SEL))imp)(self, alias);
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        ZTHApplyBottomTransparencyToToolbar((UIView *)self);
+                    });
+                }), types);
             }
-            class_replaceMethod(toolbarClass, sel, imp_implementationWithBlock(^(id self) {
-                IMP imp = class_getMethodImplementation(toolbarClass, alias);
-                if (imp) ((void (*)(id, SEL))imp)(self, alias);
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    ZTHApplyBottomTransparencyToToolbar((UIView *)self);
-                });
-            }), types);
         }
-    }
+    });
 
-    installed = YES;
     NSLog(@"[ZolaTheme] bottom transparency hooks installed");
 }
 
