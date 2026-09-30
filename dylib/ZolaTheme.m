@@ -428,22 +428,6 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 @end
 
-static void ZTHClearTabBarBackgrounds(UIView *view) {
-    if (!view) return;
-
-    NSString *name = NSStringFromClass(view.class);
-    if ([name containsString:@"BarBackground"] ||
-        [name containsString:@"Background"] ||
-        [name containsString:@"VisualEffect"]) {
-        view.backgroundColor = UIColor.clearColor;
-        view.opaque = NO;
-    }
-
-    for (UIView *subview in view.subviews) {
-        ZTHClearTabBarBackgrounds(subview);
-    }
-}
-
 static void ZTHApplyBottomTransparency(UITabBar *bar) {
     if (!bar) return;
 
@@ -455,14 +439,19 @@ static void ZTHApplyBottomTransparency(UITabBar *bar) {
     bar.backgroundImage = [UIImage new];
     bar.shadowImage = [UIImage new];
 
-    ZTHClearTabBarBackgrounds(bar);
+    for (UIView *subview in bar.subviews) {
+        NSString *name = NSStringFromClass(subview.class);
+        if ([name containsString:@"BarBackground"] || [name containsString:@"Background"]) {
+            subview.backgroundColor = UIColor.clearColor;
+            subview.opaque = NO;
+        }
+    }
 }
 
-static void ZTHTabBarLayoutSubviews(id self, SEL _cmd) {
-    SEL alias = sel_registerName("zth_orig_UITabBar_layoutSubviews");
+static void ZTHTabBarDidMoveToWindow(id self, SEL _cmd) {
+    SEL alias = sel_registerName("zth_orig_UITabBar_didMoveToWindow");
     IMP imp = class_getMethodImplementation(UITabBar.class, alias);
     if (imp) ((void (*)(id, SEL))imp)(self, alias);
-
     ZTHApplyBottomTransparency((UITabBar *)self);
 }
 
@@ -471,16 +460,16 @@ static void ZTHInstallBottomTransparencyHook(void) {
     if (installed) return;
 
     Class cls = UITabBar.class;
-    SEL selector = @selector(layoutSubviews);
+    SEL selector = @selector(didMoveToWindow);
     Method method = class_getInstanceMethod(cls, selector);
     if (!method) return;
 
-    SEL alias = sel_registerName("zth_orig_UITabBar_layoutSubviews");
+    SEL alias = sel_registerName("zth_orig_UITabBar_didMoveToWindow");
     if (!class_getInstanceMethod(cls, alias)) {
         class_addMethod(cls, alias, method_getImplementation(method), method_getTypeEncoding(method));
     }
 
-    class_replaceMethod(cls, selector, (IMP)ZTHTabBarLayoutSubviews, method_getTypeEncoding(method));
+    class_replaceMethod(cls, selector, (IMP)ZTHTabBarDidMoveToWindow, method_getTypeEncoding(method));
     installed = YES;
 }
 
