@@ -128,6 +128,23 @@ static UIImage *ZTHBubbleReplacementForSubMenuButton(UIImage *original, UIContro
     return nil;
 }
 
+static void ZTHSubMenuButtonSetBackgroundImage(id self, SEL _cmd, UIImage *image, UIControlState state) {
+    Class cls = objc_getClass("SubMenuButton");
+    SEL alias = sel_registerName("zth_orig_SubMenuButton_setBackgroundImage:forState:");
+    UIImage *replacement = nil;
+
+    if (cls && [self isKindOfClass:cls]) {
+        replacement = ZTHBubbleReplacementForSubMenuButton(image, state);
+    }
+
+    IMP imp = class_getMethodImplementation(cls, alias);
+    if (imp) {
+        ((void (*)(id, SEL, UIImage *, UIControlState))imp)(self, alias,
+                                                            replacement ?: image,
+                                                            state);
+    }
+}
+
 static void ZTHInstallSubMenuButtonHook(void) {
     static BOOL installed = NO;
     if (installed) return;
@@ -147,19 +164,7 @@ static void ZTHInstallSubMenuButtonHook(void) {
         class_addMethod(cls, alias, originalIMP, types);
     }
 
-    class_replaceMethod(cls, selector, (IMP)^(id self, UIImage *image, UIControlState state) {
-        UIImage *replacement = nil;
-        if (ZTHIsSubMenuButton(self)) {
-            replacement = ZTHBubbleReplacementForSubMenuButton(image, state);
-        }
-
-        IMP imp = class_getMethodImplementation(cls, alias);
-        if (imp) {
-            ((void (*)(id, SEL, UIImage *, UIControlState))imp)(self, alias,
-                                                               replacement ?: image,
-                                                               state);
-        }
-    }, types);
+    class_replaceMethod(cls, selector, (IMP)ZTHSubMenuButtonSetBackgroundImage, types);
 
     installed = YES;
     NSLog(@"[ZolaTheme] SubMenuButton setBackgroundImage hook installed");
