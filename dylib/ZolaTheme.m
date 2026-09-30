@@ -395,10 +395,6 @@ static void ZTHViewDidAppear(UIViewController *self, SEL _cmd, BOOL animated) {
     if (orig) orig(self, alias, animated);
     dispatch_async(dispatch_get_main_queue(), ^{
         ZTHApplyToController(self);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            ZTHApplyBubbleImagesToVisibleWindows();
-        });
     });
 }
 
@@ -408,74 +404,6 @@ static void ZTHViewDidLayoutSubviews(UIViewController *self, SEL _cmd) {
     if (orig) orig(self, alias);
     if (ZTHLooksLikeChatController(self)) {
         dispatch_async(dispatch_get_main_queue(), ^{ ZTHApplyToController(self); });
-    }
-}
-
-static IMP ZTHOriginalCellLayoutIMP = NULL;
-static IMP ZTHOriginalSubMenuLayoutIMP = NULL;
-static BOOL ZTHCellHookInstalled = NO;
-static BOOL ZTHSubMenuHookInstalled = NO;
-
-static void ZTHCellLayoutHook(id self, SEL _cmd) {
-    if (ZTHOriginalCellLayoutIMP) {
-        ((void (*)(id, SEL))ZTHOriginalCellLayoutIMP)(self, _cmd);
-    }
-    ZTHApplyBubbleToCell((UIView *)self);
-}
-
-static void ZTHSubMenuLayoutHook(id self, SEL _cmd) {
-    if (ZTHOriginalSubMenuLayoutIMP) {
-        ((void (*)(id, SEL))ZTHOriginalSubMenuLayoutIMP)(self, _cmd);
-    }
-
-    UIView *submenu = (UIView *)self;
-    UIView *cell = submenu;
-    while (cell && ![NSStringFromClass(cell.class).lowercaseString isEqualToString:@"altextmessagetableitemcell"]) {
-        cell = cell.superview;
-    }
-    if (cell) ZTHApplyBubbleToCell(cell);
-}
-
-static void ZTHInstallLayoutHook(Class cls,
-                                  SEL alias,
-                                  IMP *originalStorage,
-                                  BOOL *installedStorage,
-                                  IMP replacement) {
-    if (!cls || *installedStorage) return;
-
-    Method method = class_getInstanceMethod(cls, @selector(layoutSubviews));
-    if (!method) return;
-
-    IMP original = method_getImplementation(method);
-    const char *types = method_getTypeEncoding(method);
-
-    if (!class_getInstanceMethod(cls, alias)) {
-        class_addMethod(cls, alias, original, types);
-    }
-
-    if (!*originalStorage) *originalStorage = original;
-    class_replaceMethod(cls, @selector(layoutSubviews), replacement, types);
-    *installedStorage = YES;
-}
-
-static void ZTHInstallBubbleHooks(void) {
-    Class cellClass = objc_getClass("ALTextMessageTableItemCell");
-    ZTHInstallLayoutHook(cellClass,
-                          sel_registerName("zth_orig_ALTextMessageTableItemCell_layoutSubviews"),
-                          &ZTHOriginalCellLayoutIMP,
-                          &ZTHCellHookInstalled,
-                          (IMP)ZTHCellLayoutHook);
-
-    Class submenuClass = objc_getClass("SubMenuButton");
-    ZTHInstallLayoutHook(submenuClass,
-                          sel_registerName("zth_orig_SubMenuButton_layoutSubviews"),
-                          &ZTHOriginalSubMenuLayoutIMP,
-                          &ZTHSubMenuHookInstalled,
-                          (IMP)ZTHSubMenuLayoutHook);
-
-    if (ZTHCellHookInstalled || ZTHSubMenuHookInstalled) {
-        NSLog(@"[ZolaTheme] bubble hooks: cell=%d submenu=%d",
-              ZTHCellHookInstalled, ZTHSubMenuHookInstalled);
     }
 }
 
