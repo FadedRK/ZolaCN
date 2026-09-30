@@ -196,7 +196,57 @@ static void ZTHRetrySubMenuButtonHook(void) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.5 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             ZTHInstallSubMenuButtonHook();
-                ZTHApplyBottomTransparencyAppearance();
+        });
+    }
+}
+
+static void ZTHDumpBottomView(UIView *view, UIWindow *window, NSInteger depth) {
+    if (!view || depth > 8) return;
+
+    CGRect r = [view convertRect:view.bounds toView:window];
+    CGFloat screenH = CGRectGetHeight(window.bounds);
+    if (CGRectGetMaxY(r) >= screenH - 180.0 || CGRectGetMinY(r) >= screenH - 220.0) {
+        UIColor *bg = view.backgroundColor;
+        CGFloat alpha = view.alpha;
+        BOOL opaque = view.opaque;
+        NSLog(@"[ZolaBottomTrace] depth=%ld class=%@ frame=%@ windowFrame=%@ hidden=%d alpha=%.2f opaque=%d bg=%@ subviews=%lu",
+              (long)depth,
+              NSStringFromClass(view.class),
+              NSStringFromCGRect(view.frame),
+              NSStringFromCGRect(r),
+              view.hidden,
+              alpha,
+              opaque,
+              bg,
+              (unsigned long)view.subviews.count);
+    }
+
+    for (UIView *subview in view.subviews) {
+        ZTHDumpBottomView(subview, window, depth + 1);
+    }
+}
+
+static void ZTHRunBottomTrace(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSLog(@"[ZolaBottomTrace] ===== BEGIN =====");
+        NSArray *windows = [UIApplication sharedApplication].windows;
+        for (UIWindow *window in windows) {
+            if (window.hidden || window.alpha <= 0.01) continue;
+            NSLog(@"[ZolaBottomTrace] WINDOW class=%@ frame=%@ root=%@",
+                  NSStringFromClass(window.class),
+                  NSStringFromCGRect(window.bounds),
+                  NSStringFromClass(window.rootViewController.class));
+            ZTHDumpBottomView(window, window, 0);
+        }
+        NSLog(@"[ZolaBottomTrace] ===== END =====");
+    });
+}
+
+static void ZTHScheduleBottomTrace(void) {
+    for (NSUInteger i = 1; i <= 4; i++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 2 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            ZTHRunBottomTrace();
         });
     }
 }
@@ -455,18 +505,6 @@ static void ZTHTabBarDidMoveToWindow(id self, SEL _cmd) {
     ZTHApplyBottomTransparency((UITabBar *)self);
 }
 
-static void ZTHApplyBottomTransparencyAppearance(void) {
-    BOOL enabled = [[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey];
-    UITabBar *appearance = [UITabBar appearance];
-
-    if (enabled) {
-        appearance.translucent = YES;
-        appearance.backgroundColor = UIColor.clearColor;
-        appearance.backgroundImage = [UIImage new];
-        appearance.shadowImage = [UIImage new];
-    }
-}
-
 static void ZTHInstallBottomTransparencyHook(void) {
     static BOOL installed = NO;
     if (installed) return;
@@ -510,5 +548,6 @@ static void ZTHInit(void) {
         if (![d objectForKey:ZTHBottomTransparentKey]) [d setBool:YES forKey:ZTHBottomTransparentKey];
         ZTHReloadBubbleCache();
         ZTHInstall();
+        ZTHScheduleBottomTrace();
     }
 }
