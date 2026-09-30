@@ -53,14 +53,6 @@ static BOOL ZLCNValidString(NSString *s) {
 }
 
 static NSString *ZLCNLanguage(void) {
-    // The plugin's explicit language selection must override Zalo/system localization.
-    NSString *selected = [[NSUserDefaults standardUserDefaults] stringForKey:ZLCNLanguageKey];
-    if ([selected isEqualToString:@"zh"] ||
-        [selected isEqualToString:@"vi"] ||
-        [selected isEqualToString:@"en"]) {
-        return selected;
-    }
-
     NSArray<NSString *> *localizations = [NSBundle mainBundle].preferredLocalizations;
     NSString *lang = localizations.firstObject.lowercaseString;
 
