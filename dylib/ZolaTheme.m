@@ -51,13 +51,6 @@ static void ZTHReloadBubbleCache(void) {
     }
 }
 
-static UIImage *ZTHCachedBubbleForKey(NSString *key) {
-    if ([key isEqualToString:ZTHMyBubbleKey]) return ZTHCachedMyBubbleResizable;
-    if ([key isEqualToString:ZTHOtherBubbleKey]) return ZTHCachedOtherBubbleResizable;
-    return nil;
-}
-
-
 static NSURL *ZTHThemeDirectory(void) {
     NSString *base = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES).firstObject;
     NSString *dir = [base stringByAppendingPathComponent:@"ZolaCN/Theme"];
@@ -98,13 +91,6 @@ static NSString *ZTHText(NSString *zh, NSString *en, NSString *vi) {
  * We deliberately do NOT scan cells/windows or change layout. The hook only
  * runs when Zalo itself assigns a bubble background image to SubMenuButton.
  */
-static BOOL ZTHIsSubMenuButton(id self) {
-    Class cls = object_getClass(self);
-    if (!cls) return NO;
-    return class_getInstanceMethod(cls, sel_registerName("setBackgroundImage:forState:")) != NULL
-        && [NSStringFromClass(cls) isEqualToString:@"SubMenuButton"];
-}
-
 static UIImage *ZTHBubbleReplacementForSubMenuButton(UIImage *original, UIControlState state) {
     if (!original) return nil;
 
