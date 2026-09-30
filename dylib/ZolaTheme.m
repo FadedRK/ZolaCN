@@ -202,6 +202,8 @@ static void ZTHInstallSubMenuButtonHook(void) {
     NSLog(@"[ZolaTheme] SubMenuButton setBackgroundImage hook installed");
 }
 
+static void ZTHInstallKBToolbarTransparencyHook(void);
+
 static void ZTHRetrySubMenuButtonHook(void) {
     ZTHInstallSubMenuButtonHook();
     for (NSUInteger i = 1; i <= 12; i++) {
@@ -558,7 +560,6 @@ static void ZTHInstallKBToolbarTransparencyHook(void) {
                             method_getTypeEncoding(move));
     }
 
-    ZTHApplyKBToolbarTransparency((UIView *)[[cls alloc] init]);
     installed = YES;
     NSLog(@"[ZolaTheme] KBToolbarView transparency hook installed");
 }
