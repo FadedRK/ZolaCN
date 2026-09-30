@@ -9,6 +9,54 @@ static NSString * const ZTHGlobalBackgroundKey = @"ZolaThemeGlobalBackground";
 static NSString * const ZTHTopTransparentKey = @"ZolaThemeTopTransparent";
 static NSString * const ZTHBottomTransparentKey = @"ZolaThemeBottomTransparent";
 
+static UIImage *ZTHCachedMyBubble = nil;
+static UIImage *ZTHCachedOtherBubble = nil;
+static UIImage *ZTHCachedMyBubbleResizable = nil;
+static UIImage *ZTHCachedOtherBubbleResizable = nil;
+
+static void ZTHReloadBubbleCache(void) {
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSString *myPath = [d stringForKey:ZTHMyBubbleKey];
+    NSString *otherPath = [d stringForKey:ZTHOtherBubbleKey];
+
+    UIImage *my = myPath.length ? [UIImage imageWithContentsOfFile:myPath] : nil;
+    UIImage *other = otherPath.length ? [UIImage imageWithContentsOfFile:otherPath] : nil;
+
+    ZTHCachedMyBubble = my;
+    ZTHCachedOtherBubble = other;
+
+    /*
+     * These are intentionally conservative stretch regions. The center
+     * portion expands horizontally while the decorative border stays intact.
+     * Keep the source image in memory so scrolling never decodes PNG files.
+     */
+    if (my && my.size.width > 4.0 && my.size.height > 4.0) {
+        CGFloat x = MIN(MAX(my.size.width * 0.30, 12.0), my.size.width * 0.45);
+        CGFloat y = MIN(MAX(my.size.height * 0.30, 10.0), my.size.height * 0.45);
+        ZTHCachedMyBubbleResizable =
+            [my resizableImageWithCapInsets:UIEdgeInsetsMake(y, x, y, x)
+                                resizingMode:UIImageResizingModeStretch];
+    } else {
+        ZTHCachedMyBubbleResizable = my;
+    }
+
+    if (other && other.size.width > 4.0 && other.size.height > 4.0) {
+        CGFloat x = MIN(MAX(other.size.width * 0.30, 12.0), other.size.width * 0.45);
+        CGFloat y = MIN(MAX(other.size.height * 0.30, 10.0), other.size.height * 0.45);
+        ZTHCachedOtherBubbleResizable =
+            [other resizableImageWithCapInsets:UIEdgeInsetsMake(y, x, y, x)
+                                   resizingMode:UIImageResizingModeStretch];
+    } else {
+        ZTHCachedOtherBubbleResizable = other;
+    }
+}
+
+static UIImage *ZTHCachedBubbleForKey(NSString *key) {
+    if ([key isEqualToString:ZTHMyBubbleKey]) return ZTHCachedMyBubbleResizable;
+    if ([key isEqualToString:ZTHOtherBubbleKey]) return ZTHCachedOtherBubbleResizable;
+    return nil;
+}
+
 static UIImage *ZTHImageForKey(NSString *key) {
     NSString *path = [[NSUserDefaults standardUserDefaults] stringForKey:key];
     return path.length ? [UIImage imageWithContentsOfFile:path] : nil;
@@ -130,31 +178,17 @@ static UIImage *ZTHCustomBubbleForSelector(SEL sel, UIImage *original) {
     NSString *name = NSStringFromSelector(sel);
     BOOL right = [name containsString:@"Right"];
     BOOL left = [name containsString:@"Left"];
-    BOOL selected = [name containsString:@"Selected"];
-
-    NSString *key = nil;
-    if (right || left) {
-        /*
-         * The selected variants are kept on the same custom image for now.
-         * Zalo still decides which selector/state is requested.
-         */
-        key = right ? ZTHMyBubbleKey : ZTHOtherBubbleKey;
-        if (selected && !ZTHImageForKey(key)) {
-            key = right ? ZTHOtherBubbleKey : ZTHMyBubbleKey;
-        }
-    }
-
-    UIImage *replacement = key ? ZTHImageForKey(key) : nil;
-    if (!replacement) return nil;
+    if (!right && !left) return nil;
 
     /*
-     * Preserve Zalo's stretch geometry. The object returned by
-     * CSSSkinManager is already a stretchable UIImage/_UIResizableImage,
-     * so use its capInsets and resizingMode rather than inventing insets.
+     * CSSSkinManager is responsible for selecting left/right/state. We only
+     * replace the returned image. Never touch cells or views here.
      */
-    UIEdgeInsets insets = original.capInsets;
-    UIImageResizingMode mode = original.resizingMode;
-    return [replacement resizableImageWithCapInsets:insets resizingMode:mode];
+    UIImage *replacement = right
+        ? ZTHCachedBubbleForKey(ZTHMyBubbleKey)
+        : ZTHCachedBubbleForKey(ZTHOtherBubbleKey);
+
+    return replacement ?: nil;
 }
 
 static id ZTHCSSSkinCallOriginal(id self, SEL _cmd) {
@@ -539,6 +573,7 @@ static void ZTHApplyToController(UIViewController *vc) {
     if (path && key) {
         [[NSUserDefaults standardUserDefaults] setObject:path forKey:key];
         [[NSUserDefaults standardUserDefaults] synchronize];
+        ZTHReloadBubbleCache();
 
         dispatch_async(dispatch_get_main_queue(), ^{
             ZTHApplyBubbleImagesToVisibleWindows();
@@ -564,6 +599,7 @@ static void ZTHApplyToController(UIViewController *vc) {
             [[NSUserDefaults standardUserDefaults] removeObjectForKey:ZTHMyBubbleKey];
             [[NSUserDefaults standardUserDefaults] removeObjectForKey:ZTHOtherBubbleKey];
             [[NSUserDefaults standardUserDefaults] synchronize];
+            ZTHReloadBubbleCache();
             [tableView reloadData];
         }
     } else if (indexPath.row == 0) {
@@ -674,7 +710,6 @@ static void ZTHInstall(void) {
         }
 
         ZTHInstallCSSSkinHooks();
-        ZTHInstallBubbleHooks();
 
         Method layout = class_getInstanceMethod(UIViewController.class, @selector(viewDidLayoutSubviews));
         SEL layoutAlias = sel_registerName("zth_orig_viewDidLayoutSubviews");
@@ -685,7 +720,10 @@ static void ZTHInstall(void) {
     });
 
     ZTHInstallCSSSkinHooks();
-    ZTHInstallBubbleHooks();
+    ZTHReloadBubbleCache();
+
+    /* No periodic window/cell traversal: bubble replacement is resource-level. */
+    return;
 
     for (NSInteger i = 0; i < 80; i++) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
@@ -712,6 +750,7 @@ static void ZTHInit(void) {
         if (![d objectForKey:ZTHGlobalBackgroundKey]) [d setBool:NO forKey:ZTHGlobalBackgroundKey];
         if (![d objectForKey:ZTHTopTransparentKey]) [d setBool:YES forKey:ZTHTopTransparentKey];
         if (![d objectForKey:ZTHBottomTransparentKey]) [d setBool:YES forKey:ZTHBottomTransparentKey];
+        ZTHReloadBubbleCache();
         ZTHInstall();
     }
 }
