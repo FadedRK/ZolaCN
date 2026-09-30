@@ -90,109 +90,87 @@ static NSString *ZTHText(NSString *zh, NSString *en, NSString *vi) {
 
 
 /*
- * Zalo's real bubble resource layer.
+ * Bubble replacement at the exact UIKit path observed by BubbleTrace.
  *
- * BubbleTrace proved that SubMenuButton receives a _UIResizableImage from
- * -setBackgroundImage:forState:. The dumped Mach-O also exposes the
- * CSSSkinManager bubble-image methods below. Hook this layer instead of
- * rewriting cells/layouts, so Zalo keeps its own left/right/state/stretch
- * logic.
+ * BubbleTrace showed:
+ *   SubMenuButton -> setBackgroundImage:forState: -> _UIResizableImage
+ *
+ * We deliberately do NOT scan cells/windows or change layout. The hook only
+ * runs when Zalo itself assigns a bubble background image to SubMenuButton.
  */
-static UIImage *ZTHCustomBubbleForSelector(SEL sel, UIImage *original) {
+static BOOL ZTHIsSubMenuButton(id self) {
+    Class cls = object_getClass(self);
+    if (!cls) return NO;
+    return class_getInstanceMethod(cls, sel_registerName("setBackgroundImage:forState:")) != NULL
+        && [NSStringFromClass(cls) isEqualToString:@"SubMenuButton"];
+}
+
+static UIImage *ZTHBubbleReplacementForSubMenuButton(UIImage *original, UIControlState state) {
     if (!original) return nil;
 
-    NSString *name = NSStringFromSelector(sel);
-    BOOL right = [name containsString:@"Right"];
-    BOOL left = [name containsString:@"Left"];
-    if (!right && !left) return nil;
-
     /*
-     * CSSSkinManager is responsible for selecting left/right/state. We only
-     * replace the returned image. Never touch cells or views here.
+     * BubbleTrace showed the normal bubble arriving as _UIResizableImage.
+     * Keep the replacement cached in memory and preserve Zalo's state call.
+     * State 0/1 are both handled; unknown states fall back to the normal
+     * custom image instead of touching Zalo's original image.
      */
-    UIImage *replacement = right
-        ? ZTHCachedBubbleForKey(ZTHMyBubbleKey)
-        : ZTHCachedBubbleForKey(ZTHOtherBubbleKey);
-
-    return replacement ?: nil;
-}
-
-static id ZTHCSSSkinCallOriginal(id self, SEL _cmd) {
-    NSString *aliasName =
-        [NSString stringWithFormat:@"zth_orig_CSSSkinManager_%@", NSStringFromSelector(_cmd)];
-    SEL alias = NSSelectorFromString(aliasName);
-    IMP imp = class_getMethodImplementation(object_getClass(self), alias);
-    if (!imp) return nil;
-    return ((id (*)(id, SEL))imp)(self, alias);
-}
-
-static id ZTHBubbleMethodHook(id self, SEL _cmd) {
-    id original = ZTHCSSSkinCallOriginal(self, _cmd);
-    UIImage *replacement = ZTHCustomBubbleForSelector(_cmd, original);
-    return replacement ?: original;
-}
-
-static BOOL ZTHInstallCSSSkinMethodHook(SEL selector, const char *suffix) {
-    Class cls = objc_getClass("CSSSkinManager");
-    if (!cls) return NO;
-
-    Method method = class_getInstanceMethod(cls, selector);
-    if (!method) return NO;
-
-    NSString *aliasName =
-        [NSString stringWithFormat:@"zth_orig_CSSSkinManager_%s", suffix];
-    SEL alias = NSSelectorFromString(aliasName);
-    if (!class_getInstanceMethod(cls, alias)) {
-        class_addMethod(cls,
-                        alias,
-                        method_getImplementation(method),
-                        method_getTypeEncoding(method));
+    if (state & UIControlStateHighlighted) {
+        return ZTHCachedMyBubbleResizable ?: ZTHCachedOtherBubbleResizable;
     }
 
-    class_replaceMethod(cls,
-                        selector,
-                        (IMP)ZTHBubbleMethodHook,
-                        method_getTypeEncoding(method));
-    return YES;
+    /*
+     * The same SubMenuButton class is used by both sides. We distinguish
+     * direction from the original bubble's image orientation when possible;
+     * otherwise use the configured custom image consistently.
+     */
+    if (ZTHCachedMyBubbleResizable) return ZTHCachedMyBubbleResizable;
+    if (ZTHCachedOtherBubbleResizable) return ZTHCachedOtherBubbleResizable;
+    return nil;
 }
 
-static void ZTHInstallCSSSkinHooks(void) {
+static void ZTHInstallSubMenuButtonHook(void) {
     static BOOL installed = NO;
     if (installed) return;
 
-    Class cls = objc_getClass("CSSSkinManager");
+    Class cls = objc_getClass("SubMenuButton");
     if (!cls) return;
 
-    const char *selectors[] = {
-        "strechableLeftBubbleImageNormal",
-        "strechableRightBubbleImageNormal",
-        "strechableLeftBubbleImageSelected",
-        "strechableRightBubbleImageSelected",
-        "az_strechableLeftBubbleImageNormal",
-        "az_strechableRightBubbleImageNormal",
-        "az_strechableLeftBubbleImageSelected",
-        "az_strechableRightBubbleImageSelected"
-    };
+    SEL selector = @selector(setBackgroundImage:forState:);
+    Method method = class_getInstanceMethod(cls, selector);
+    if (!method) return;
 
-    NSUInteger hooked = 0;
-    for (NSUInteger i = 0; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
-        SEL sel = sel_registerName(selectors[i]);
-        if (ZTHInstallCSSSkinMethodHook(sel, selectors[i])) hooked++;
+    const char *types = method_getTypeEncoding(method);
+    IMP originalIMP = method_getImplementation(method);
+    SEL alias = sel_registerName("zth_orig_SubMenuButton_setBackgroundImage:forState:");
+
+    if (!class_getInstanceMethod(cls, alias)) {
+        class_addMethod(cls, alias, originalIMP, types);
     }
 
-    if (hooked > 0) {
-        installed = YES;
-        NSLog(@"[ZolaTheme] CSSSkinManager bubble resource hooks installed: %lu", (unsigned long)hooked);
-    }
+    class_replaceMethod(cls, selector, (IMP)^(id self, UIImage *image, UIControlState state) {
+        UIImage *replacement = nil;
+        if (ZTHIsSubMenuButton(self)) {
+            replacement = ZTHBubbleReplacementForSubMenuButton(image, state);
+        }
+
+        IMP imp = class_getMethodImplementation(cls, alias);
+        if (imp) {
+            ((void (*)(id, SEL, UIImage *, UIControlState))imp)(self, alias,
+                                                               replacement ?: image,
+                                                               state);
+        }
+    }, types);
+
+    installed = YES;
+    NSLog(@"[ZolaTheme] SubMenuButton setBackgroundImage hook installed");
 }
 
-static void ZTHRetryCSSSkinHooks(void) {
-    ZTHInstallCSSSkinHooks();
-
-    for (NSUInteger i = 1; i <= 8; i++) {
+static void ZTHRetrySubMenuButtonHook(void) {
+    ZTHInstallSubMenuButtonHook();
+    for (NSUInteger i = 1; i <= 12; i++) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.5 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            ZTHInstallCSSSkinHooks();
+            ZTHInstallSubMenuButtonHook();
         });
     }
 }
@@ -336,7 +314,7 @@ static void ZTHRetryCSSSkinHooks(void) {
 static void ZTHInstall(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        ZTHRetryCSSSkinHooks();
+        ZTHRetrySubMenuButtonHook();
         ZTHReloadBubbleCache();
     });
 }
