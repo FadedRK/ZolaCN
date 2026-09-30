@@ -285,7 +285,6 @@ static void ZTHInstallBottomTransparencyHooks(void) {
             if (!class_getInstanceMethod(toolbarClass, alias)) {
                 class_addMethod(toolbarClass, alias, original, types);
             }
-            class_replaceMethod(class_getInstanceClass(toolbarClass), sel, original, types);
             class_replaceMethod(toolbarClass, sel, imp_implementationWithBlock(^(id self) {
                 IMP imp = class_getMethodImplementation(toolbarClass, alias);
                 if (imp) ((void (*)(id, SEL))imp)(self, alias);
