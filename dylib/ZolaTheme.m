@@ -219,9 +219,29 @@ static void ZTHRetrySubMenuButtonHook(void) {
         if (indexPath.row == 0) {
             cell.textLabel.text = ZTHText(@"我的气泡", @"My Bubble", @"Bong bóng của tôi");
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+
+            NSString *path = [d stringForKey:ZTHMyBubbleKey];
+            if (path.length) {
+                UIImage *image = [UIImage imageWithContentsOfFile:path];
+                UIImageView *preview = [[UIImageView alloc] initWithImage:image];
+                preview.frame = CGRectMake(0, 0, 92, 40);
+                preview.contentMode = UIViewContentModeScaleAspectFit;
+                preview.clipsToBounds = YES;
+                cell.accessoryView = preview;
+            }
         } else if (indexPath.row == 1) {
             cell.textLabel.text = ZTHText(@"对方气泡", @"Other Bubble", @"Bong bóng đối phương");
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+
+            NSString *path = [d stringForKey:ZTHOtherBubbleKey];
+            if (path.length) {
+                UIImage *image = [UIImage imageWithContentsOfFile:path];
+                UIImageView *preview = [[UIImageView alloc] initWithImage:image];
+                preview.frame = CGRectMake(0, 0, 92, 40);
+                preview.contentMode = UIViewContentModeScaleAspectFit;
+                preview.clipsToBounds = YES;
+                cell.accessoryView = preview;
+            }
         } else {
             cell.textLabel.text = ZTHText(@"恢复默认气泡", @"Reset Bubbles", @"Khôi phục bong bóng");
             cell.textLabel.textColor = [UIColor systemRedColor];
