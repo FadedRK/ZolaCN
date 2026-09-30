@@ -22,7 +22,7 @@ static void ZTHReloadBubbleCache(void) {
     ZTHCachedOtherBubble = otherPath.length ? [UIImage imageWithContentsOfFile:otherPath] : nil;
 }
 
-static UIImage *ZTHBubbleUsingOriginalStretch(UIImage *custom, UIImage *original) {
+static UIImage *ZTHBubbleUsingOriginalStretch(UIImage *custom, UIImage *original, BOOL myBubble) {
     if (!custom || !original) return nil;
 
     CGSize targetSize = original.size;
@@ -45,10 +45,28 @@ static UIImage *ZTHBubbleUsingOriginalStretch(UIImage *custom, UIImage *original
     UIEdgeInsets insets = original.capInsets;
 
     /*
-     * Zalo already knows the correct nine-slice geometry for this exact
-     * left/right/state bubble. Do not invent percentages or use fixed
-     * margins. Clamp only to keep UIKit valid if a custom image is unusual.
+     * The original Zalo capInsets were too close to the edge for custom
+     * bubbles with a visible tail/corner. Move the stretch window inward:
+     * enlarge the non-stretching edge regions instead of changing the view
+     * size or scanning cells.
+     *
+     * For the user's bubble the right tail is protected more; for the other
+     * side the left tail is protected more.
      */
+    const CGFloat horizontalExtra = 8.0;
+    const CGFloat tailExtra = 10.0;
+    const CGFloat verticalExtra = 4.0;
+
+    insets.left += horizontalExtra;
+    insets.right += horizontalExtra;
+    if (myBubble) {
+        insets.right += tailExtra;
+    } else {
+        insets.left += tailExtra;
+    }
+    insets.top += verticalExtra;
+    insets.bottom += verticalExtra;
+
     CGFloat maxX = MAX(0.0, (base.size.width - 1.0) * 0.5);
     CGFloat maxY = MAX(0.0, (base.size.height - 1.0) * 0.5);
 
@@ -125,7 +143,7 @@ static UIImage *ZTHBubbleReplacementForSubMenuButton(id button,
     UIImage *custom = myBubble ? ZTHCachedMyBubble : ZTHCachedOtherBubble;
     (void)state;
 
-    return ZTHBubbleUsingOriginalStretch(custom, original);
+    return ZTHBubbleUsingOriginalStretch(custom, original, myBubble);
 }
 
 static void ZTHSubMenuButtonSetBackgroundImage(id self, SEL _cmd, UIImage *image, UIControlState state) {
