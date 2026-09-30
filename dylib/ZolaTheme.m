@@ -11,70 +11,73 @@ static NSString * const ZTHBottomTransparentKey = @"ZolaThemeBottomTransparent";
 
 static UIImage *ZTHCachedMyBubble = nil;
 static UIImage *ZTHCachedOtherBubble = nil;
-static UIImage *ZTHCachedMyBubbleResizable = nil;
-static UIImage *ZTHCachedOtherBubbleResizable = nil;
 
 static void ZTHReloadBubbleCache(void) {
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     NSString *myPath = [d stringForKey:ZTHMyBubbleKey];
     NSString *otherPath = [d stringForKey:ZTHOtherBubbleKey];
 
-    UIImage *my = myPath.length ? [UIImage imageWithContentsOfFile:myPath] : nil;
-    UIImage *other = otherPath.length ? [UIImage imageWithContentsOfFile:otherPath] : nil;
+    /*
+     * Keep only decoded source images here. The stretch geometry must come
+     * from Zalo's original bubble image, because left/right and state can
+     * have different capInsets.
+     */
+    ZTHCachedMyBubble = myPath.length ? [UIImage imageWithContentsOfFile:myPath] : nil;
+    ZTHCachedOtherBubble = otherPath.length ? [UIImage imageWithContentsOfFile:otherPath] : nil;
+}
 
-    ZTHCachedMyBubble = my;
-    ZTHCachedOtherBubble = other;
+static UIImage *ZTHScaleBubbleToOriginalSize(UIImage *image, CGSize size) {
+    if (!image || size.width <= 0.0 || size.height <= 0.0) return image;
+
+    if (fabs(image.size.width - size.width) < 0.5 &&
+        fabs(image.size.height - size.height) < 0.5) {
+        return image;
+    }
+
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+    format.scale = image.scale > 0.0 ? image.scale : [UIScreen mainScreen].scale;
+    format.opaque = NO;
+
+    UIGraphicsImageRenderer *renderer =
+        [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
+
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [image drawInRect:CGRectMake(0.0, 0.0, size.width, size.height)];
+    }];
+}
+
+static UIEdgeInsets ZTHSafeCapInsets(UIEdgeInsets insets, CGSize size) {
+    CGFloat maxX = MAX(0.0, floor((size.width - 1.0) * 0.5));
+    CGFloat maxY = MAX(0.0, floor((size.height - 1.0) * 0.5));
+
+    insets.left = MIN(MAX(insets.left, 0.0), maxX);
+    insets.right = MIN(MAX(insets.right, 0.0), maxX);
+    insets.top = MIN(MAX(insets.top, 0.0), maxY);
+    insets.bottom = MIN(MAX(insets.bottom, 0.0), maxY);
+
+    if (insets.left + insets.right >= size.width) {
+        insets.right = MAX(0.0, size.width - insets.left - 1.0);
+    }
+    if (insets.top + insets.bottom >= size.height) {
+        insets.bottom = MAX(0.0, size.height - insets.top - 1.0);
+    }
+
+    return insets;
+}
+
+static UIImage *ZTHReplacementBubble(UIImage *custom, UIImage *original) {
+    if (!custom || !original) return nil;
 
     /*
-     * Nine-slice the bubble asymmetrically.
-     *
-     * The old symmetric 30~45% cap region could put the decorative tail
-     * inside the stretchable center. That caused the tail/border to smear
-     * when Zalo expanded the background for longer messages.
-     *
-     * Preserve a larger side cap on the tail side:
-     *   my/Right bubble  -> preserve more pixels on the RIGHT
-     *   other/Left bubble -> preserve more pixels on the LEFT
-     *
-     * Only the clean center area is allowed to stretch horizontally.
+     * Reuse the exact stretch geometry Zalo supplied for this specific
+     * left/right/state image. Do not invent percentage-based capInsets.
      */
-    if (my && my.size.width > 8.0 && my.size.height > 8.0) {
-        CGFloat left = MAX(6.0, my.size.width * 0.18);
-        CGFloat right = MAX(10.0, my.size.width * 0.34);
-        CGFloat top = MAX(6.0, my.size.height * 0.22);
-        CGFloat bottom = MAX(6.0, my.size.height * 0.22);
+    CGSize baseSize = original.size;
+    UIImage *base = ZTHScaleBubbleToOriginalSize(custom, baseSize);
+    UIEdgeInsets insets = ZTHSafeCapInsets(original.capInsets, base.size);
 
-        CGFloat maxHorizontal = my.size.width - 2.0;
-        if (left + right >= maxHorizontal) {
-            left = my.size.width * 0.20;
-            right = my.size.width * 0.25;
-        }
-
-        ZTHCachedMyBubbleResizable =
-            [my resizableImageWithCapInsets:UIEdgeInsetsMake(top, left, bottom, right)
-                                resizingMode:UIImageResizingModeStretch];
-    } else {
-        ZTHCachedMyBubbleResizable = my;
-    }
-
-    if (other && other.size.width > 8.0 && other.size.height > 8.0) {
-        CGFloat left = MAX(10.0, other.size.width * 0.34);
-        CGFloat right = MAX(6.0, other.size.width * 0.18);
-        CGFloat top = MAX(6.0, other.size.height * 0.22);
-        CGFloat bottom = MAX(6.0, other.size.height * 0.22);
-
-        CGFloat maxHorizontal = other.size.width - 2.0;
-        if (left + right >= maxHorizontal) {
-            left = other.size.width * 0.25;
-            right = other.size.width * 0.20;
-        }
-
-        ZTHCachedOtherBubbleResizable =
-            [other resizableImageWithCapInsets:UIEdgeInsetsMake(top, left, bottom, right)
-                                   resizingMode:UIImageResizingModeStretch];
-    } else {
-        ZTHCachedOtherBubbleResizable = other;
-    }
+    return [base resizableImageWithCapInsets:insets
+                                resizingMode:original.resizingMode];
 }
 
 static NSURL *ZTHThemeDirectory(void) {
@@ -367,4 +370,16 @@ static void ZTHInit(void) {
         ZTHReloadBubbleCache();
         ZTHInstall();
     }
+}static UIImage *ZTHCustomBubbleForSelector(SEL sel, UIImage *original) {
+    if (!original) return nil;
+
+    NSString *name = NSStringFromSelector(sel);
+    BOOL right = [name containsString:@"Right"];
+    BOOL left = [name containsString:@"Left"];
+    if (!right && !left) return nil;
+
+    UIImage *custom = right ? ZTHCachedMyBubble : ZTHCachedOtherBubble;
+    return ZTHReplacementBubble(custom, original);
 }
+
+
