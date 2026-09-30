@@ -198,6 +198,31 @@ static void ZTHRetrySubMenuButtonHook(void) {
     }
 }
 
+static void ZTHBottomTraceLog(NSString *message) {
+    if (!message.length) return;
+
+    NSLog(@"%@", message);
+
+    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    if (!documents.length) return;
+
+    NSString *path = [documents stringByAppendingPathComponent:@"ZolaBottomTrace.log"];
+    NSString *line = [message stringByAppendingString:@"\n"];
+
+    @synchronized ([UIApplication sharedApplication]) {
+        NSFileManager *fm = [NSFileManager defaultManager];
+        if (![fm fileExistsAtPath:path]) {
+            [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        } else {
+            NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+            if (!handle) return;
+            [handle seekToEndOfFile];
+            [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+            [handle closeFile];
+        }
+    }
+}
+
 static void ZTHDumpBottomView(UIView *view, UIWindow *window, NSInteger depth) {
     if (!view || depth > 8) return;
 
@@ -207,7 +232,7 @@ static void ZTHDumpBottomView(UIView *view, UIWindow *window, NSInteger depth) {
         UIColor *bg = view.backgroundColor;
         CGFloat alpha = view.alpha;
         BOOL opaque = view.opaque;
-        NSLog(@"[ZolaBottomTrace] depth=%ld class=%@ frame=%@ windowFrame=%@ hidden=%d alpha=%.2f opaque=%d bg=%@ subviews=%lu",
+        ZTHBottomTraceLog([NSString stringWithFormat:@"[ZolaBottomTrace] depth=%ld class=%@ frame=%@ windowFrame=%@ hidden=%d alpha=%.2f opaque=%d bg=%@ subviews=%lu",
               (long)depth,
               NSStringFromClass(view.class),
               NSStringFromCGRect(view.frame),
@@ -216,7 +241,7 @@ static void ZTHDumpBottomView(UIView *view, UIWindow *window, NSInteger depth) {
               alpha,
               opaque,
               bg,
-              (unsigned long)view.subviews.count);
+              (unsigned long)view.subviews.count]);
     }
 
     for (UIView *subview in view.subviews) {
@@ -226,7 +251,7 @@ static void ZTHDumpBottomView(UIView *view, UIWindow *window, NSInteger depth) {
 
 static void ZTHRunBottomTrace(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSLog(@"[ZolaBottomTrace] ===== BEGIN =====");
+        ZTHBottomTraceLog(@"[ZolaBottomTrace] ===== BEGIN =====");
         NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
         for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
             if (![scene isKindOfClass:[UIWindowScene class]]) continue;
@@ -236,13 +261,13 @@ static void ZTHRunBottomTrace(void) {
         }
         for (UIWindow *window in windows) {
             if (window.hidden || window.alpha <= 0.01) continue;
-            NSLog(@"[ZolaBottomTrace] WINDOW class=%@ frame=%@ root=%@",
+            ZTHBottomTraceLog([NSString stringWithFormat:@"[ZolaBottomTrace] WINDOW class=%@ frame=%@ root=%@",
                   NSStringFromClass(window.class),
                   NSStringFromCGRect(window.bounds),
-                  NSStringFromClass(window.rootViewController.class));
+                  NSStringFromClass(window.rootViewController.class)]);
             ZTHDumpBottomView(window, window, 0);
         }
-        NSLog(@"[ZolaBottomTrace] ===== END =====");
+        ZTHBottomTraceLog(@"[ZolaBottomTrace] ===== END =====");
     });
 }
 
