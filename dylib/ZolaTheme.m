@@ -198,86 +198,106 @@ static void ZTHRetrySubMenuButtonHook(void) {
     }
 }
 
-static void ZTHBottomTraceLog(NSString *message) {
-    if (!message.length) return;
+static void ZTHApplyBottomTransparencyToTabBar(UITabBar *bar) {
+    if (!bar) return;
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) return;
 
-    NSLog(@"%@", message);
+    // Trace confirmed the visible solid layer is:
+    // UITabBar -> _UIBarBackground -> UIImageView
+    for (UIView *subview in bar.subviews) {
+        if (![NSStringFromClass(subview.class) isEqualToString:@"_UIBarBackground"]) continue;
 
-    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    if (!documents.length) return;
+        subview.backgroundColor = UIColor.clearColor;
+        subview.opaque = NO;
 
-    NSString *path = [documents stringByAppendingPathComponent:@"ZolaBottomTrace.log"];
-    NSString *line = [message stringByAppendingString:@"\n"];
+        for (UIView *child in subview.subviews) {
+            if ([child isKindOfClass:[UIImageView class]]) {
+                child.backgroundColor = UIColor.clearColor;
+                child.opaque = NO;
+                child.alpha = 0.0;
+            }
+        }
 
-    @synchronized ([UIApplication sharedApplication]) {
-        NSFileManager *fm = [NSFileManager defaultManager];
-        if (![fm fileExistsAtPath:path]) {
-            [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        } else {
-            NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
-            if (!handle) return;
-            [handle seekToEndOfFile];
-            [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-            [handle closeFile];
+        break;
+    }
+
+    bar.backgroundColor = UIColor.clearColor;
+    bar.opaque = NO;
+    bar.translucent = YES;
+}
+
+static void ZTHApplyBottomTransparencyToToolbar(UIView *toolbar) {
+    if (!toolbar) return;
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) return;
+
+    toolbar.backgroundColor = UIColor.clearColor;
+    toolbar.opaque = NO;
+
+    // KBToolbarView was confirmed by trace as the solid chat-input toolbar.
+    for (UIView *subview in toolbar.subviews) {
+        if ([NSStringFromClass(subview.class) isEqualToString:@"_UIBarBackground"]) {
+            subview.backgroundColor = UIColor.clearColor;
+            subview.opaque = NO;
+            for (UIView *child in subview.subviews) {
+                if ([child isKindOfClass:[UIImageView class]]) {
+                    child.backgroundColor = UIColor.clearColor;
+                    child.opaque = NO;
+                    child.alpha = 0.0;
+                }
+            }
         }
     }
 }
 
-static void ZTHDumpBottomView(UIView *view, UIWindow *window, NSInteger depth) {
-    if (!view || depth > 8) return;
+static void ZTHInstallBottomTransparencyHooks(void) {
+    static BOOL installed = NO;
+    if (installed) return;
 
-    CGRect r = [view convertRect:view.bounds toView:window];
-    CGFloat screenH = CGRectGetHeight(window.bounds);
-    if (CGRectGetMaxY(r) >= screenH - 180.0 || CGRectGetMinY(r) >= screenH - 220.0) {
-        UIColor *bg = view.backgroundColor;
-        CGFloat alpha = view.alpha;
-        BOOL opaque = view.opaque;
-        ZTHBottomTraceLog([NSString stringWithFormat:@"[ZolaBottomTrace] depth=%ld class=%@ frame=%@ windowFrame=%@ hidden=%d alpha=%.2f opaque=%d bg=%@ subviews=%lu",
-              (long)depth,
-              NSStringFromClass(view.class),
-              NSStringFromCGRect(view.frame),
-              NSStringFromCGRect(r),
-              view.hidden,
-              alpha,
-              opaque,
-              bg,
-              (unsigned long)view.subviews.count]);
-    }
-
-    for (UIView *subview in view.subviews) {
-        ZTHDumpBottomView(subview, window, depth + 1);
-    }
-}
-
-static void ZTHRunBottomTrace(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        ZTHBottomTraceLog(@"[ZolaBottomTrace] ===== BEGIN =====");
-        NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
-        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-            UIWindowScene *windowScene = (UIWindowScene *)scene;
-            if (windowScene.activationState == UISceneActivationStateUnattached) continue;
-            [windows addObjectsFromArray:windowScene.windows];
+    Class tabBarClass = objc_getClass("UITabBar");
+    if (tabBarClass) {
+        SEL sel = @selector(didMoveToWindow);
+        Method method = class_getInstanceMethod(tabBarClass, sel);
+        if (method) {
+            const char *types = method_getTypeEncoding(method);
+            IMP original = method_getImplementation(method);
+            SEL alias = sel_registerName("zth_orig_UITabBar_didMoveToWindow");
+            if (!class_getInstanceMethod(tabBarClass, alias)) {
+                class_addMethod(tabBarClass, alias, original, types);
+            }
+            class_replaceMethod(tabBarClass, sel, imp_implementationWithBlock(^(id self) {
+                IMP imp = class_getMethodImplementation(tabBarClass, alias);
+                if (imp) ((void (*)(id, SEL))imp)(self, alias);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    ZTHApplyBottomTransparencyToTabBar((UITabBar *)self);
+                });
+            }), types);
         }
-        for (UIWindow *window in windows) {
-            if (window.hidden || window.alpha <= 0.01) continue;
-            ZTHBottomTraceLog([NSString stringWithFormat:@"[ZolaBottomTrace] WINDOW class=%@ frame=%@ root=%@",
-                  NSStringFromClass(window.class),
-                  NSStringFromCGRect(window.bounds),
-                  NSStringFromClass(window.rootViewController.class)]);
-            ZTHDumpBottomView(window, window, 0);
-        }
-        ZTHBottomTraceLog(@"[ZolaBottomTrace] ===== END =====");
-    });
-}
-
-static void ZTHScheduleBottomTrace(void) {
-    for (NSUInteger i = 1; i <= 4; i++) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 2 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            ZTHRunBottomTrace();
-        });
     }
+
+    Class toolbarClass = objc_getClass("KBToolbarView");
+    if (toolbarClass) {
+        SEL sel = @selector(didMoveToWindow);
+        Method method = class_getInstanceMethod(toolbarClass, sel);
+        if (method) {
+            const char *types = method_getTypeEncoding(method);
+            IMP original = method_getImplementation(method);
+            SEL alias = sel_registerName("zth_orig_KBToolbarView_didMoveToWindow");
+            if (!class_getInstanceMethod(toolbarClass, alias)) {
+                class_addMethod(toolbarClass, alias, original, types);
+            }
+            class_replaceMethod(class_getInstanceClass(toolbarClass), sel, original, types);
+            class_replaceMethod(toolbarClass, sel, imp_implementationWithBlock(^(id self) {
+                IMP imp = class_getMethodImplementation(toolbarClass, alias);
+                if (imp) ((void (*)(id, SEL))imp)(self, alias);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    ZTHApplyBottomTransparencyToToolbar((UIView *)self);
+                });
+            }), types);
+        }
+    }
+
+    installed = YES;
+    NSLog(@"[ZolaTheme] bottom transparency hooks installed");
 }
 
 @interface ZTHSettingsViewController : UITableViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate, UIDocumentPickerDelegate>
@@ -531,6 +551,6 @@ static void ZTHInit(void) {
         if (![d objectForKey:ZTHBottomTransparentKey]) [d setBool:YES forKey:ZTHBottomTransparentKey];
         ZTHReloadBubbleCache();
         ZTHInstall();
-        ZTHScheduleBottomTrace();
+        ZTHInstallBottomTransparencyHooks();
     }
 }
