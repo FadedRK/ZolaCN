@@ -11,70 +11,53 @@ static NSString * const ZTHBottomTransparentKey = @"ZolaThemeBottomTransparent";
 
 static UIImage *ZTHCachedMyBubble = nil;
 static UIImage *ZTHCachedOtherBubble = nil;
-static UIImage *ZTHCachedMyBubbleResizable = nil;
-static UIImage *ZTHCachedOtherBubbleResizable = nil;
 
 static void ZTHReloadBubbleCache(void) {
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     NSString *myPath = [d stringForKey:ZTHMyBubbleKey];
     NSString *otherPath = [d stringForKey:ZTHOtherBubbleKey];
 
-    UIImage *my = myPath.length ? [UIImage imageWithContentsOfFile:myPath] : nil;
-    UIImage *other = otherPath.length ? [UIImage imageWithContentsOfFile:otherPath] : nil;
+    ZTHCachedMyBubble = myPath.length ? [UIImage imageWithContentsOfFile:myPath] : nil;
+    ZTHCachedOtherBubble = otherPath.length ? [UIImage imageWithContentsOfFile:otherPath] : nil;
+}
 
-    ZTHCachedMyBubble = my;
-    ZTHCachedOtherBubble = other;
+static UIImage *ZTHBubbleUsingOriginalStretch(UIImage *custom, UIImage *original) {
+    if (!custom || !original) return nil;
+
+    CGSize targetSize = original.size;
+    UIImage *base = custom;
+
+    if (fabs(custom.size.width - targetSize.width) >= 0.5 ||
+        fabs(custom.size.height - targetSize.height) >= 0.5) {
+        UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+        format.scale = custom.scale > 0.0 ? custom.scale : [UIScreen mainScreen].scale;
+        format.opaque = NO;
+
+        UIGraphicsImageRenderer *renderer =
+            [[UIGraphicsImageRenderer alloc] initWithSize:targetSize format:format];
+
+        base = [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+            [custom drawInRect:CGRectMake(0.0, 0.0, targetSize.width, targetSize.height)];
+        }];
+    }
+
+    UIEdgeInsets insets = original.capInsets;
 
     /*
-     * Nine-slice the bubble asymmetrically.
-     *
-     * The old symmetric 30~45% cap region could put the decorative tail
-     * inside the stretchable center. That caused the tail/border to smear
-     * when Zalo expanded the background for longer messages.
-     *
-     * Preserve a larger side cap on the tail side:
-     *   my/Right bubble  -> preserve more pixels on the RIGHT
-     *   other/Left bubble -> preserve more pixels on the LEFT
-     *
-     * Only the clean center area is allowed to stretch horizontally.
+     * Zalo already knows the correct nine-slice geometry for this exact
+     * left/right/state bubble. Do not invent percentages or use fixed
+     * margins. Clamp only to keep UIKit valid if a custom image is unusual.
      */
-    if (my && my.size.width > 8.0 && my.size.height > 8.0) {
-        CGFloat left = MAX(6.0, my.size.width * 0.18);
-        CGFloat right = MAX(10.0, my.size.width * 0.34);
-        CGFloat top = MAX(6.0, my.size.height * 0.22);
-        CGFloat bottom = MAX(6.0, my.size.height * 0.22);
+    CGFloat maxX = MAX(0.0, (base.size.width - 1.0) * 0.5);
+    CGFloat maxY = MAX(0.0, (base.size.height - 1.0) * 0.5);
 
-        CGFloat maxHorizontal = my.size.width - 2.0;
-        if (left + right >= maxHorizontal) {
-            left = my.size.width * 0.20;
-            right = my.size.width * 0.25;
-        }
+    insets.left = MIN(MAX(insets.left, 0.0), maxX);
+    insets.right = MIN(MAX(insets.right, 0.0), maxX);
+    insets.top = MIN(MAX(insets.top, 0.0), maxY);
+    insets.bottom = MIN(MAX(insets.bottom, 0.0), maxY);
 
-        ZTHCachedMyBubbleResizable =
-            [my resizableImageWithCapInsets:UIEdgeInsetsMake(top, left, bottom, right)
-                                resizingMode:UIImageResizingModeStretch];
-    } else {
-        ZTHCachedMyBubbleResizable = my;
-    }
-
-    if (other && other.size.width > 8.0 && other.size.height > 8.0) {
-        CGFloat left = MAX(10.0, other.size.width * 0.34);
-        CGFloat right = MAX(6.0, other.size.width * 0.18);
-        CGFloat top = MAX(6.0, other.size.height * 0.22);
-        CGFloat bottom = MAX(6.0, other.size.height * 0.22);
-
-        CGFloat maxHorizontal = other.size.width - 2.0;
-        if (left + right >= maxHorizontal) {
-            left = other.size.width * 0.25;
-            right = other.size.width * 0.20;
-        }
-
-        ZTHCachedOtherBubbleResizable =
-            [other resizableImageWithCapInsets:UIEdgeInsetsMake(top, left, bottom, right)
-                                   resizingMode:UIImageResizingModeStretch];
-    } else {
-        ZTHCachedOtherBubbleResizable = other;
-    }
+    return [base resizableImageWithCapInsets:insets
+                                resizingMode:original.resizingMode];
 }
 
 static NSURL *ZTHThemeDirectory(void) {
@@ -122,11 +105,6 @@ static UIImage *ZTHBubbleReplacementForSubMenuButton(id button,
                                                             UIControlState state) {
     if (!original) return nil;
 
-    /*
-     * Work out which side of the chat this button belongs to from its nearest
-     * message-cell container. This is only a parent lookup during the exact
-     * image assignment call; it does not scan the window or alter layout.
-     */
     UIView *view = [button isKindOfClass:[UIView class]] ? button : nil;
     UIView *cell = nil;
 
@@ -143,15 +121,10 @@ static UIImage *ZTHBubbleReplacementForSubMenuButton(id button,
         myBubble = p.x > CGRectGetMidX(cell.bounds);
     }
 
-    /*
-     * Selected/highlighted states use the same directional artwork. The
-     * original state is preserved by passing the replacement through Zalo's
-     * own setBackgroundImage:forState: call.
-     */
+    UIImage *custom = myBubble ? ZTHCachedMyBubble : ZTHCachedOtherBubble;
     (void)state;
-    return myBubble
-        ? ZTHCachedMyBubbleResizable
-        : ZTHCachedOtherBubbleResizable;
+
+    return ZTHBubbleUsingOriginalStretch(custom, original);
 }
 
 static void ZTHSubMenuButtonSetBackgroundImage(id self, SEL _cmd, UIImage *image, UIControlState state) {
