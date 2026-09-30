@@ -99,69 +99,6 @@ static BOOL ZTHLooksLikeChatController(UIViewController *vc) {
 
 
 
-static void ZTHApplyBackground(UIViewController *vc) {
-    if (!ZTHLooksLikeChatController(vc)) return;
-    UIImage *image = ZTHImageForKey(ZTHBackgroundKey);
-    if (!image) return;
-    BOOL global = [[NSUserDefaults standardUserDefaults] boolForKey:ZTHGlobalBackgroundKey];
-    // Global mode always applies. Single-chat mode applies to the current chat
-    // controller only, which keeps the feature scoped instead of modifying Zalo's
-    // global appearance.
-    if (!global && !ZTHLooksLikeChatController(vc)) return;
-
-    UIView *root = vc.view;
-    UIImageView *iv = (UIImageView *)[root viewWithTag:0x5A544842];
-    if (!iv) {
-        iv = [[UIImageView alloc] initWithFrame:root.bounds];
-        iv.tag = 0x5A544842;
-        iv.contentMode = UIViewContentModeScaleAspectFill;
-        iv.clipsToBounds = YES;
-        iv.userInteractionEnabled = NO;
-        [root insertSubview:iv atIndex:0];
-    }
-    iv.frame = root.bounds;
-    iv.image = image;
-    [root sendSubviewToBack:iv];
-}
-
-static void ZTHApplyBars(UIViewController *vc) {
-    BOOL top = [[NSUserDefaults standardUserDefaults] boolForKey:ZTHTopTransparentKey];
-    BOOL bottom = [[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey];
-
-    if (top) {
-        UINavigationBar *bar = vc.navigationController.navigationBar;
-        if (bar) {
-            UINavigationBarAppearance *a = [bar.standardAppearance copy];
-            [a configureWithTransparentBackground];
-            a.backgroundColor = UIColor.clearColor;
-            a.shadowColor = UIColor.clearColor;
-            bar.standardAppearance = a;
-            if (@available(iOS 15.0, *)) {
-                bar.scrollEdgeAppearance = a;
-                bar.compactAppearance = a;
-            }
-            bar.translucent = YES;
-            bar.backgroundColor = UIColor.clearColor;
-        }
-    }
-
-    if (bottom) {
-        UITabBar *tab = vc.tabBarController.tabBar;
-        if (tab) {
-            UITabBarAppearance *a = [tab.standardAppearance copy];
-            [a configureWithTransparentBackground];
-            a.backgroundColor = UIColor.clearColor;
-            a.shadowColor = UIColor.clearColor;
-            tab.standardAppearance = a;
-            if (@available(iOS 15.0, *)) {
-                tab.scrollEdgeAppearance = a;
-            }
-            tab.translucent = YES;
-            tab.backgroundColor = UIColor.clearColor;
-        }
-    }
-}
-
 
 /*
  * Zalo's real bubble resource layer.
