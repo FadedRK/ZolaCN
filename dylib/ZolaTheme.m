@@ -203,6 +203,7 @@ static void ZTHInstallSubMenuButtonHook(void) {
 }
 
 static void ZTHInstallKBToolbarTransparencyHook(void);
+static void ZTHInstallBottomTransparencyHook(void);
 
 static void ZTHRetrySubMenuButtonHook(void) {
     ZTHInstallSubMenuButtonHook();
