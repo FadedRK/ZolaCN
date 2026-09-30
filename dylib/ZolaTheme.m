@@ -57,10 +57,6 @@ static UIImage *ZTHCachedBubbleForKey(NSString *key) {
     return nil;
 }
 
-static UIImage *ZTHImageForKey(NSString *key) {
-    NSString *path = [[NSUserDefaults standardUserDefaults] stringForKey:key];
-    return path.length ? [UIImage imageWithContentsOfFile:path] : nil;
-}
 
 static NSURL *ZTHThemeDirectory(void) {
     NSString *base = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES).firstObject;
