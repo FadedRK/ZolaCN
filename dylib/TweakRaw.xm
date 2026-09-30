@@ -9,7 +9,7 @@ extern const unsigned long ZLCNTranslationsPlistLength;
 
 static NSDictionary *ZLCNTranslations;
 static NSUInteger ZLCNHitCount;
-static NSString * const ZLCNLanguageKey = @"ZolaCNLanguage";
+static NSString * const ZLCNLanguageKey = @"ZolaAntiRecallInterfaceLanguage";
 
 static NSDictionary *ZLCNTranslationOverrides(void) {
     static NSDictionary *overrides;
