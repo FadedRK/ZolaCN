@@ -157,15 +157,17 @@ static UIImage *ZTHCustomBubbleForSelector(SEL sel, UIImage *original) {
     return [replacement resizableImageWithCapInsets:insets resizingMode:mode];
 }
 
-static id ZTHCSSSkinCallOriginal(id self, SEL alias) {
+static id ZTHCSSSkinCallOriginal(id self, SEL _cmd) {
+    NSString *aliasName =
+        [NSString stringWithFormat:@"zth_orig_CSSSkinManager_%@", NSStringFromSelector(_cmd)];
+    SEL alias = NSSelectorFromString(aliasName);
     IMP imp = class_getMethodImplementation(object_getClass(self), alias);
     if (!imp) return nil;
     return ((id (*)(id, SEL))imp)(self, alias);
 }
 
 static id ZTHBubbleMethodHook(id self, SEL _cmd) {
-    SEL alias = sel_registerName("zth_orig_CSSSkinManager_bubble");
-    id original = ZTHCSSSkinCallOriginal(self, alias);
+    id original = ZTHCSSSkinCallOriginal(self, _cmd);
     UIImage *replacement = ZTHCustomBubbleForSelector(_cmd, original);
     return replacement ?: original;
 }
