@@ -96,22 +96,8 @@ static NSString *ZTHCopyImage(UIImage *image, NSString *name) {
 }
 
 static NSString *ZTHCurrentLanguage(void) {
-    NSArray<NSString *> *localizations = [NSBundle mainBundle].preferredLocalizations;
-    NSString *lang = localizations.firstObject.lowercaseString;
-
-    if ([lang hasPrefix:@"vi"]) return @"vi";
-    if ([lang hasPrefix:@"en"]) return @"en";
-    if ([lang hasPrefix:@"zh"]) return @"zh";
-
-    NSArray<NSString *> *languages = [[NSUserDefaults standardUserDefaults] objectForKey:@"AppleLanguages"];
-    for (NSString *item in languages) {
-        NSString *candidate = item.lowercaseString;
-        if ([candidate hasPrefix:@"vi"]) return @"vi";
-        if ([candidate hasPrefix:@"en"]) return @"en";
-        if ([candidate hasPrefix:@"zh"]) return @"zh";
-    }
-
-    return @"zh";
+    NSString *lang = [[NSUserDefaults standardUserDefaults] stringForKey:@"ZolaCNLanguage"];
+    return lang.length ? lang : @"zh";
 }
 
 static NSString *ZTHText(NSString *zh, NSString *en, NSString *vi) {
