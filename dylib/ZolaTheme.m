@@ -196,7 +196,7 @@ static void ZTHRetrySubMenuButtonHook(void) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.5 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             ZTHInstallSubMenuButtonHook();
-                ZTHInstallBottomTransparencyHook();
+                ZTHApplyBottomTransparencyAppearance();
         });
     }
 }
@@ -453,6 +453,18 @@ static void ZTHTabBarDidMoveToWindow(id self, SEL _cmd) {
     IMP imp = class_getMethodImplementation(UITabBar.class, alias);
     if (imp) ((void (*)(id, SEL))imp)(self, alias);
     ZTHApplyBottomTransparency((UITabBar *)self);
+}
+
+static void ZTHApplyBottomTransparencyAppearance(void) {
+    BOOL enabled = [[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey];
+    UITabBar *appearance = [UITabBar appearance];
+
+    if (enabled) {
+        appearance.translucent = YES;
+        appearance.backgroundColor = UIColor.clearColor;
+        appearance.backgroundImage = [UIImage new];
+        appearance.shadowImage = [UIImage new];
+    }
 }
 
 static void ZTHInstallBottomTransparencyHook(void) {
