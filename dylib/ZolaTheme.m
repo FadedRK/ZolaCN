@@ -157,26 +157,44 @@ static BOOL ZTHInstallCSSSkinMethodHook(SEL selector, const char *suffix) {
 }
 
 static void ZTHInstallCSSSkinHooks(void) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        const char *selectors[] = {
-            "strechableLeftBubbleImageNormal",
-            "strechableRightBubbleImageNormal",
-            "strechableLeftBubbleImageSelected",
-            "strechableRightBubbleImageSelected",
-            "az_strechableLeftBubbleImageNormal",
-            "az_strechableRightBubbleImageNormal",
-            "az_strechableLeftBubbleImageSelected",
-            "az_strechableRightBubbleImageSelected"
-        };
+    static BOOL installed = NO;
+    if (installed) return;
 
-        for (NSUInteger i = 0; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
-            SEL sel = sel_registerName(selectors[i]);
-            ZTHInstallCSSSkinMethodHook(sel, selectors[i]);
-        }
+    Class cls = objc_getClass("CSSSkinManager");
+    if (!cls) return;
 
-        NSLog(@"[ZolaTheme] CSSSkinManager bubble resource hooks installed");
-    });
+    const char *selectors[] = {
+        "strechableLeftBubbleImageNormal",
+        "strechableRightBubbleImageNormal",
+        "strechableLeftBubbleImageSelected",
+        "strechableRightBubbleImageSelected",
+        "az_strechableLeftBubbleImageNormal",
+        "az_strechableRightBubbleImageNormal",
+        "az_strechableLeftBubbleImageSelected",
+        "az_strechableRightBubbleImageSelected"
+    };
+
+    NSUInteger hooked = 0;
+    for (NSUInteger i = 0; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
+        SEL sel = sel_registerName(selectors[i]);
+        if (ZTHInstallCSSSkinMethodHook(sel, selectors[i])) hooked++;
+    }
+
+    if (hooked > 0) {
+        installed = YES;
+        NSLog(@"[ZolaTheme] CSSSkinManager bubble resource hooks installed: %lu", (unsigned long)hooked);
+    }
+}
+
+static void ZTHRetryCSSSkinHooks(void) {
+    ZTHInstallCSSSkinHooks();
+
+    for (NSUInteger i = 1; i <= 8; i++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            ZTHInstallCSSSkinHooks();
+        });
+    }
 }
 
 @interface ZTHSettingsViewController : UITableViewController
@@ -318,7 +336,7 @@ static void ZTHInstallCSSSkinHooks(void) {
 static void ZTHInstall(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        ZTHInstallCSSSkinHooks();
+        ZTHRetryCSSSkinHooks();
         ZTHReloadBubbleCache();
     });
 }
