@@ -96,7 +96,7 @@ static NSString *ZTHCopyImage(UIImage *image, NSString *name) {
 }
 
 static NSString *ZTHCurrentLanguage(void) {
-    NSString *lang = [[NSUserDefaults standardUserDefaults] stringForKey:@"ZolaCNLanguage"];
+    NSString *lang = [[NSUserDefaults standardUserDefaults] stringForKey:@"ZolaAntiRecallInterfaceLanguage"];
     return lang.length ? lang : @"zh";
 }
 
