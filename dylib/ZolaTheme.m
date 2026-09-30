@@ -478,7 +478,6 @@ static void ZTHInstall(void) {
     dispatch_once(&once, ^{
         ZTHRetrySubMenuButtonHook();
         ZTHInstallBottomTransparencyHook();
-        ZTHInstallKBToolbarTransparencyHook();
         ZTHReloadBubbleCache();
     });
 }
