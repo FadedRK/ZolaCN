@@ -53,21 +53,8 @@ static BOOL ZLCNValidString(NSString *s) {
 }
 
 static NSString *ZLCNLanguage(void) {
-    NSArray<NSString *> *localizations = [NSBundle mainBundle].preferredLocalizations;
-    NSString *lang = localizations.firstObject.lowercaseString;
-
-    if ([lang hasPrefix:@"vi"]) return @"vi";
-    if ([lang hasPrefix:@"en"]) return @"en";
-    if ([lang hasPrefix:@"zh"]) return @"zh";
-
-    NSArray<NSString *> *languages = [[NSUserDefaults standardUserDefaults] objectForKey:@"AppleLanguages"];
-    for (NSString *item in languages) {
-        NSString *candidate = item.lowercaseString;
-        if ([candidate hasPrefix:@"vi"]) return @"vi";
-        if ([candidate hasPrefix:@"en"]) return @"en";
-        if ([candidate hasPrefix:@"zh"]) return @"zh";
-    }
-
+    NSString *lang = [[NSUserDefaults standardUserDefaults] stringForKey:ZLCNLanguageKey];
+    if ([lang isEqualToString:@"vi"] || [lang isEqualToString:@"en"]) return lang;
     return @"zh";
 }
 
