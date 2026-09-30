@@ -96,8 +96,22 @@ static NSString *ZTHCopyImage(UIImage *image, NSString *name) {
 }
 
 static NSString *ZTHCurrentLanguage(void) {
-    NSString *lang = [[NSUserDefaults standardUserDefaults] stringForKey:@"ZolaCNLanguage"];
-    return lang.length ? lang : @"zh";
+    NSArray<NSString *> *localizations = [NSBundle mainBundle].preferredLocalizations;
+    NSString *lang = localizations.firstObject.lowercaseString;
+
+    if ([lang hasPrefix:@"vi"]) return @"vi";
+    if ([lang hasPrefix:@"en"]) return @"en";
+    if ([lang hasPrefix:@"zh"]) return @"zh";
+
+    NSArray<NSString *> *languages = [[NSUserDefaults standardUserDefaults] objectForKey:@"AppleLanguages"];
+    for (NSString *item in languages) {
+        NSString *candidate = item.lowercaseString;
+        if ([candidate hasPrefix:@"vi"]) return @"vi";
+        if ([candidate hasPrefix:@"en"]) return @"en";
+        if ([candidate hasPrefix:@"zh"]) return @"zh";
+    }
+
+    return @"zh";
 }
 
 static NSString *ZTHText(NSString *zh, NSString *en, NSString *vi) {
@@ -425,10 +439,56 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 @end
 
+static void ZTHApplyBottomTransparency(UITabBar *bar) {
+    if (!bar) return;
+
+    BOOL enabled = [[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey];
+    if (!enabled) return;
+
+    bar.translucent = YES;
+    bar.backgroundColor = UIColor.clearColor;
+    bar.backgroundImage = [UIImage new];
+    bar.shadowImage = [UIImage new];
+
+    for (UIView *subview in bar.subviews) {
+        NSString *name = NSStringFromClass(subview.class);
+        if ([name containsString:@"BarBackground"] || [name containsString:@"Background"]) {
+            subview.backgroundColor = UIColor.clearColor;
+            subview.opaque = NO;
+        }
+    }
+}
+
+static void ZTHTabBarDidMoveToWindow(id self, SEL _cmd) {
+    SEL alias = sel_registerName("zth_orig_UITabBar_didMoveToWindow");
+    IMP imp = class_getMethodImplementation(UITabBar.class, alias);
+    if (imp) ((void (*)(id, SEL))imp)(self, alias);
+    ZTHApplyBottomTransparency((UITabBar *)self);
+}
+
+static void ZTHInstallBottomTransparencyHook(void) {
+    static BOOL installed = NO;
+    if (installed) return;
+
+    Class cls = UITabBar.class;
+    SEL selector = @selector(didMoveToWindow);
+    Method method = class_getInstanceMethod(cls, selector);
+    if (!method) return;
+
+    SEL alias = sel_registerName("zth_orig_UITabBar_didMoveToWindow");
+    if (!class_getInstanceMethod(cls, alias)) {
+        class_addMethod(cls, alias, method_getImplementation(method), method_getTypeEncoding(method));
+    }
+
+    class_replaceMethod(cls, selector, (IMP)ZTHTabBarDidMoveToWindow, method_getTypeEncoding(method));
+    installed = YES;
+}
+
 static void ZTHInstall(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         ZTHRetrySubMenuButtonHook();
+        ZTHInstallBottomTransparencyHook();
         ZTHReloadBubbleCache();
     });
 }
