@@ -208,6 +208,8 @@ static void ZTHRetrySubMenuButtonHook(void) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.5 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             ZTHInstallSubMenuButtonHook();
+            ZTHInstallKBToolbarTransparencyHook();
+            ZTHInstallBottomTransparencyHook();
         });
     }
 }
@@ -484,11 +486,89 @@ static void ZTHInstallBottomTransparencyHook(void) {
     installed = YES;
 }
 
+static void ZTHApplyKBToolbarTransparency(UIView *toolbar) {
+    if (!toolbar) return;
+
+    BOOL enabled = [[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey];
+    if (!enabled) return;
+
+    toolbar.backgroundColor = UIColor.clearColor;
+    toolbar.opaque = NO;
+
+    for (UIView *subview in toolbar.subviews) {
+        // Keep the text input itself white; only remove the toolbar chrome.
+        NSString *name = NSStringFromClass(subview.class);
+        if ([name isEqualToString:@"HPGrowingTextView"] ||
+            [name isEqualToString:@"MyTextView"] ||
+            [name isEqualToString:@"HPTextViewInternal"]) {
+            continue;
+        }
+
+        if (subview.tag == -1 ||
+            [name containsString:@"Background"] ||
+            [name containsString:@"BarBackground"]) {
+            subview.backgroundColor = UIColor.clearColor;
+            subview.opaque = NO;
+        }
+    }
+}
+
+static void ZTHKBToolbarSetBackgroundColor(id self, SEL _cmd, UIColor *color) {
+    SEL alias = sel_registerName("zth_orig_KBToolbarView_setBackgroundColor:");
+    IMP imp = class_getMethodImplementation(objc_getClass("KBToolbarView"), alias);
+    if (imp) ((void (*)(id, SEL, UIColor *))imp)(self, alias, color);
+
+    ZTHApplyKBToolbarTransparency((UIView *)self);
+}
+
+static void ZTHKBToolbarDidMoveToWindow(id self, SEL _cmd) {
+    SEL alias = sel_registerName("zth_orig_KBToolbarView_didMoveToWindow");
+    IMP imp = class_getMethodImplementation(objc_getClass("KBToolbarView"), alias);
+    if (imp) ((void (*)(id, SEL))imp)(self, alias);
+
+    ZTHApplyKBToolbarTransparency((UIView *)self);
+}
+
+static void ZTHInstallKBToolbarTransparencyHook(void) {
+    static BOOL installed = NO;
+    if (installed) return;
+
+    Class cls = objc_getClass("KBToolbarView");
+    if (!cls) return;
+
+    Method bg = class_getInstanceMethod(cls, @selector(setBackgroundColor:));
+    if (bg) {
+        SEL alias = sel_registerName("zth_orig_KBToolbarView_setBackgroundColor:");
+        if (!class_getInstanceMethod(cls, alias)) {
+            class_addMethod(cls, alias, method_getImplementation(bg), method_getTypeEncoding(bg));
+        }
+        class_replaceMethod(cls, @selector(setBackgroundColor:),
+                            (IMP)ZTHKBToolbarSetBackgroundColor,
+                            method_getTypeEncoding(bg));
+    }
+
+    Method move = class_getInstanceMethod(cls, @selector(didMoveToWindow));
+    if (move) {
+        SEL alias = sel_registerName("zth_orig_KBToolbarView_didMoveToWindow");
+        if (!class_getInstanceMethod(cls, alias)) {
+            class_addMethod(cls, alias, method_getImplementation(move), method_getTypeEncoding(move));
+        }
+        class_replaceMethod(cls, @selector(didMoveToWindow),
+                            (IMP)ZTHKBToolbarDidMoveToWindow,
+                            method_getTypeEncoding(move));
+    }
+
+    ZTHApplyKBToolbarTransparency((UIView *)[[cls alloc] init]);
+    installed = YES;
+    NSLog(@"[ZolaTheme] KBToolbarView transparency hook installed");
+}
+
 static void ZTHInstall(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         ZTHRetrySubMenuButtonHook();
         ZTHInstallBottomTransparencyHook();
+        ZTHInstallKBToolbarTransparencyHook();
         ZTHReloadBubbleCache();
     });
 }
