@@ -462,7 +462,7 @@ static void ZTHApplyToController(UIViewController *vc) {
     if (!vc) return;
     ZTHApplyBars(vc);
     ZTHApplyBackground(vc);
-    if (ZTHLooksLikeChatController(vc)) ZTHApplyBubbleImages(vc.view);
+
 }
 
 @interface ZTHSettingsViewController : UITableViewController
@@ -575,14 +575,8 @@ static void ZTHApplyToController(UIViewController *vc) {
         [[NSUserDefaults standardUserDefaults] synchronize];
         ZTHReloadBubbleCache();
 
-        dispatch_async(dispatch_get_main_queue(), ^{
-            ZTHApplyBubbleImagesToVisibleWindows();
-        });
     }
-    [picker dismissViewControllerAnimated:YES completion:^{
-        dispatch_async(dispatch_get_main_queue(), ^{
-            ZTHApplyBubbleImagesToVisibleWindows();
-        });
+    [picker dismissViewControllerAnimated:YES completion:nil);
     }];
 }
 
@@ -722,18 +716,7 @@ static void ZTHInstall(void) {
     ZTHInstallCSSSkinHooks();
     ZTHReloadBubbleCache();
 
-    /* No periodic window/cell traversal: bubble replacement is resource-level. */
-    return;
-
-    for (NSInteger i = 0; i < 80; i++) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                      (int64_t)(i * 0.25 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            ZTHInstallCSSSkinHooks();
-            ZTHInstallBubbleHooks();
-            if (i % 4 == 0) ZTHApplyBubbleImagesToVisibleWindows();
-        });
-    }
+    /* Bubble replacement is resource-level; no periodic view/window traversal. */
 }
 
 void ZTHOpenSettings(UIViewController *presentingViewController) {
