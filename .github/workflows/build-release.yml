@@ -63,7 +63,7 @@ jobs:
 
       - name: Build Debian package
         shell: bash
-        run: bash dylib/build_deb.sh
+        run: python3 dylib/build_deb.py
 
       - name: Generate checksums
         shell: bash
@@ -122,6 +122,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --title "ZolaCN $TAG" \
               --notes "$NOTES" \
+              --target "$GITHUB_SHA" \
               --draft=false \
               --prerelease=false
           else
