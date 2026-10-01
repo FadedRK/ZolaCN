@@ -380,9 +380,9 @@ static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
                            @"Show My Recalled Messages");
 
         UISwitch *sw = [UISwitch new];
-        sw.on = [NSUserDefaults.standardUserDefaults
+        sw.on = [[NSUserDefaults standardUserDefaults]
                     objectForKey:@"ZolaAntiRecallShowMyRecall"]
-            ? [NSUserDefaults.standardUserDefaults
+            ? [[NSUserDefaults standardUserDefaults]
                     boolForKey:@"ZolaAntiRecallShowMyRecall"]
             : YES;
 
