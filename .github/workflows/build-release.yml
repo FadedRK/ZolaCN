@@ -9,7 +9,7 @@ on:
       - 'VERSION'
       - 'README.md'
       - 'CHANGELOG.md'
-      - '.github/workflows/build-dylib.yml'
+      - '.github/workflows/build-release.yml'
 
 permissions:
   contents: write
