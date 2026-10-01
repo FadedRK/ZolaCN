@@ -421,6 +421,7 @@ static void ZLCNInit(void) {
 
         ZLCNLoadTranslations();
         ZLCNInstallUIKit();
+        ZARInstall();
         ZARInstallSettingsEntry();
 
         NSLog(@"[ZolaCN] initialization complete (%lu translations), language=%@",
