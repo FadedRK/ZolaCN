@@ -6,6 +6,9 @@
 extern const unsigned char ZLCNTranslationsPlist[];
 extern const unsigned long ZLCNTranslationsPlistLength;
 
+extern void ZARInstall(void);
+extern void ZARInstallSettings(void);
+
 #pragma mark - Localization
 
 static NSDictionary *ZLCNTranslations;
