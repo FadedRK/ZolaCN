@@ -489,7 +489,6 @@ static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
 }
 
 - (void)open {
-    UIViewController *top = self;
     UIWindow *window = nil;
     for (UIWindowScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if (scene.activationState == UISceneActivationStateForegroundActive) {
@@ -502,7 +501,6 @@ static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
         }
         if (window) break;
     }
-    if (!window) window = UIApplication.sharedApplication.keyWindow;
     UIViewController *root = window.rootViewController;
     while (root.presentedViewController) root = root.presentedViewController;
     if ([root isKindOfClass:[UINavigationController class]]) {
