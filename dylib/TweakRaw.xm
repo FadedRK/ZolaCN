@@ -204,9 +204,10 @@ static void ZLCNInstallUIKit(void) {
 __attribute__((constructor))
 static void ZLCNInit(void) {
     @autoreleasepool {
-        if (!ZLCNIsSupportedZaloVersion()) {
-            NSLog(@"[ZolaCN] unsupported Zalo version %@; localization is disabled", ZLCNCurrentZaloVersion());
-            return;
+        BOOL supported = ZLCNIsSupportedZaloVersion();
+        if (!supported) {
+            NSLog(@"[ZolaCN] version %@ is outside the compatibility list; continuing module initialization for runtime-compatible features",
+                  ZLCNCurrentZaloVersion());
         }
 
         NSLog(@"[ZolaCN] constructor entered (Zalo %@)",
