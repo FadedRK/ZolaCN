@@ -1,62 +1,39 @@
 # Changelog
 
-## [1.0.2] — 2026-10-01
-
-Settings-entry and integration fix.
-
-### Fixed
-- Restored the original ZolaAntiRecall settings entry integration inside ZolaCN.
-- Moved the anti-recall settings hook back into the anti-recall module instead of keeping a reduced duplicate in the localization source.
-- Hardened the settings presentation path for nested navigation/tab containers.
-- Restored the anti-recall runtime installation call during ZolaCN initialization.
-
-
 ## [1.0.1] — 2026-10-01
 
-Theme integration and release packaging update.
+Final integrated release.
 
 ### Added
-- Ported the stable fully transparent bottom input implementation into ZolaCN.
-- The native chat editor path is made transparent without hooking background-color setters.
-- Added top-bar transparency support and hardened lazy-loaded private-class hooks.
-- Added centralized Zalo runtime-version compatibility checking.
-- Added Debian packaging alongside the standalone dylib release.
-- Added release SHA-256 checksums.
+- Chinese runtime localization for Zalo.
+- Anti-recall support with self-recall display control.
+- Integrated **Themes & Interface** settings.
+- Custom chat bubbles and chat background.
+- Global chat background switch.
+- Transparent top bar.
+- Fully transparent bottom bar and native chat input editor.
+- Chinese, Vietnamese, and English interface options.
+- Debian package and SHA-256 release checksums.
 
 ### Fixed
-- Separated anti-recall runtime logic from the localization source file.
-- Removed the duplicate anti-recall implementation that could install the same runtime hook twice.
-- Unified anti-recall language selection with the main interface-language preference.
-- Prevented unsupported Zalo builds from installing runtime hooks.
+- Restored the original anti-recall settings entry inside ZolaCN.
+- Reduced the Zalo Settings integration to a single **zola** entry.
+- Restored the complete theme settings from the original theme module.
+- Added proper close, edge-swipe, and sheet dismissal behavior for plugin settings.
+- Removed duplicate anti-recall installation paths.
+- Modules no longer use the Zalo version list as a global installation gate.
 
 ### Compatibility
 - Target bundle identifier: `vn.com.vng.zingalo`
-- Supported Zalo versions: `26.09.01`, `26.08.02`, `26.08.01`, `26.07.01.1`, `26.07.01`, `26.06.02.1`
+- Compatibility reference versions: `26.09.01`, `26.08.02`, `26.08.01`, `26.07.01.1`, `26.07.01`, `26.06.02.1`
 - Architectures: `arm64`, `arm64e`
 - Minimum deployment target: iOS 15.0
 
 ### Release assets
-- `ZolaCN.dylib` — standalone dynamic library for TrollStore/TrollFools.
-- `com.fadedrk.zolacn_1.0.1_iphoneos-arm64.deb` — Debian package for jailbreak package managers.
-- `SHA256SUMS.txt` — checksums for release files.
+- `ZolaCN.dylib`
+- `com.fadedrk.zolacn_1.0.1_iphoneos-arm64.deb`
+- `SHA256SUMS.txt`
 
 ## [1.0.0] — 2026-09-09
 
 First public release.
-
-### Added
-- Standalone `ZolaCN.dylib` for TrollStore + TrollFools.
-- Runtime Chinese localization for Zalo iOS.
-- Translation table embedded directly into the dylib for reliable runtime loading.
-- Vietnamese/English source text translation with UIKit fallbacks.
-- GitHub Actions build that produces the standalone dylib artifact.
-
-### Compatibility
-- Target bundle identifier: `vn.com.vng.zingalo`
-- Architectures: `arm64`, `arm64e`
-- Minimum deployment target used for the build: iOS 15.0
-
-### Notes
-- This release is dylib-only. No Debian package is required.
-- The current release has been verified on the user's Zalo installation with TrollFools injection.
-- The translation coverage depends on the bundled table and the UI paths used by the current Zalo build.
