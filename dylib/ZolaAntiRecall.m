@@ -206,8 +206,7 @@ static void ZARUpdateUndo(id self, SEL _cmd, id entity) {
     NSString *display =
         [original hasSuffix:tag]
             ? original
-            : [NSString stringWithFormat:@"%@
-%@", original, tag];
+            : [NSString stringWithFormat:@"%@\n%@", original, tag];
 
     if (ZARSetMessage(entity, display)) {
         NSLog(@"[ZolaCN][AntiRecall] preserved %@ recall %@",
