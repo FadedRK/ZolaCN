@@ -93,7 +93,7 @@ ZolaCN/
 │   ├── ZolaCompatibility.h/.m   # supported Zalo versions
 │   ├── ZolaCN.plist             # target bundle filter
 │   ├── build_embed.py           # embeds translation table
-│   └── build_deb.sh             # builds the Debian package
+│   └── build_deb.py             # builds the Debian package
 ├── Translations.plist
 ├── VERSION
 ├── CHANGELOG.md
