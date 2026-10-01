@@ -424,6 +424,10 @@ static void ZTHInstallBottomTransparencyHooks(void) {
     [super viewDidLoad];
     self.title = ZTHText(@"主题美化", @"Themes", @"Chủ đề");
     self.tableView.rowHeight = 54.0;
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:ZTHText(@"关闭", @"Close", @"Đóng") style:UIBarButtonItemStylePlain target:self action:@selector(closeSettings)];
+    UIScreenEdgePanGestureRecognizer *edge = [[UIScreenEdgePanGestureRecognizer alloc] initWithTarget:self action:@selector(handleEdgePan:)];
+    edge.edges = UIRectEdgeLeft;
+    [self.view addGestureRecognizer:edge];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
@@ -503,6 +507,17 @@ static void ZTHInstallBottomTransparencyHooks(void) {
         }
     }
     return cell;
+}
+
+- (void)closeSettings {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)handleEdgePan:(UIScreenEdgePanGestureRecognizer *)gesture {
+    if (gesture.state == UIGestureRecognizerStateEnded) {
+        CGPoint velocity = [gesture velocityInView:self.view];
+        if (velocity.x > 0.0) [self dismissViewControllerAnimated:YES completion:nil];
+    }
 }
 
 - (void)globalChanged:(UISwitch *)sender {
@@ -650,6 +665,12 @@ void ZTHOpenSettings(UIViewController *presentingViewController) {
     if (!presentingViewController) return;
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:[ZTHSettingsViewController new]];
     nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    nav.modalInPresentation = NO;
+    if (@available(iOS 15.0, *)) {
+        UISheetPresentationController *sheet = nav.sheetPresentationController;
+        sheet.detents = @[ [UISheetPresentationControllerDetent largeDetent] ];
+        sheet.prefersGrabberVisible = YES;
+    }
     [presentingViewController presentViewController:nav animated:YES completion:nil];
 }
 
