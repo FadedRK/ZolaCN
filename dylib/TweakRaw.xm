@@ -62,22 +62,6 @@ static NSString *ZLCNLanguage(void) {
     return @"zh";
 }
 
-static NSString *ZLCNLanguageName(NSString *lang) {
-    NSString *current = ZLCNLanguage();
-    if ([current isEqualToString:@"vi"]) {
-        if ([lang isEqualToString:@"vi"]) return @"Tiếng Việt";
-        if ([lang isEqualToString:@"en"]) return @"English";
-        return @"Tiếng Trung";
-    }
-    if ([current isEqualToString:@"en"]) {
-        if ([lang isEqualToString:@"vi"]) return @"Vietnamese";
-        if ([lang isEqualToString:@"en"]) return @"English";
-        return @"Chinese";
-    }
-    if ([lang isEqualToString:@"vi"]) return @"Tiếng Việt";
-    if ([lang isEqualToString:@"en"]) return @"English";
-    return @"中文";
-}
 
 static void ZLCNLoadTranslations(void) {
     NSData *data = [NSData dataWithBytes:ZLCNTranslationsPlist length:ZLCNTranslationsPlistLength];
