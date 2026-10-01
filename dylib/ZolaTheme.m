@@ -201,51 +201,106 @@ static void ZTHRetrySubMenuButtonHook(void) {
 static void ZTHInstallBottomTransparencyHooks(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        /*
-         * Ported from the previously working ZolaTheme implementation.
-         *
-         * Important: only UITabBar is hooked here.
-         * KBToolbarView / KBChatInputComponentView are intentionally untouched,
-         * so the chat input box keeps its original opaque background.
-         */
-        Class tabBarClass = objc_getClass("UITabBar");
-        if (tabBarClass) {
+        Class inputClass = objc_getClass("KBChatInputComponentView");
+        if (inputClass) {
             SEL sel = @selector(layoutSubviews);
-            Method method = class_getInstanceMethod(tabBarClass, sel);
+            Method method = class_getInstanceMethod(inputClass, sel);
             if (method) {
                 const char *types = method_getTypeEncoding(method);
                 IMP original = method_getImplementation(method);
-                SEL alias = sel_registerName("zth_orig_UITabBar_layoutSubviews");
+                SEL alias = sel_registerName("zth_orig_KBChatInputComponentView_layoutSubviews");
 
-                if (!class_getInstanceMethod(tabBarClass, alias)) {
-                    class_addMethod(tabBarClass, alias, original, types);
+                if (!class_getInstanceMethod(inputClass, alias)) {
+                    class_addMethod(inputClass, alias, original, types);
                 }
 
-                class_replaceMethod(tabBarClass, sel, imp_implementationWithBlock(^(id self) {
-                    IMP imp = class_getMethodImplementation(tabBarClass, alias);
+                class_replaceMethod(inputClass, sel, imp_implementationWithBlock(^(id self) {
+                    IMP imp = class_getMethodImplementation(inputClass, alias);
                     if (imp) {
                         ((void (*)(id, SEL))imp)(self, alias);
                     }
 
-                    UITabBar *tabBar = (UITabBar *)self;
+                    UIView *inputView = (UIView *)self;
                     if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) {
                         return;
                     }
 
-                    tabBar.backgroundColor = UIColor.clearColor;
-                    tabBar.layer.backgroundColor = UIColor.clearColor.CGColor;
-                    tabBar.layer.opaque = NO;
-                    tabBar.layer.shadowOpacity = 0.0;
+                    inputView.backgroundColor = UIColor.clearColor;
+                    inputView.layer.backgroundColor = UIColor.clearColor.CGColor;
+                    inputView.layer.opaque = NO;
 
-                    /*
-                     * Match the old ZolaTheme behavior:
-                     * hide only the direct background layers of UITabBar.
-                     * Do not recurse into the tab buttons/content.
-                     */
-                    for (UIView *view in tabBar.subviews) {
-                        NSString *className = NSStringFromClass(view.class);
+                    NSMutableArray *stack = [NSMutableArray arrayWithObject:inputView];
+                    while (stack.count) {
+                        UIView *view = stack.lastObject;
+                        [stack removeLastObject];
 
-                        if ([className isEqualToString:@"_UIBarBackground"] ||
+                        if (view != inputView) {
+                            NSString *className = NSStringFromClass(view.class);
+                            BOOL isEditor =
+                                [className isEqualToString:@"HPGrowingTextView"] ||
+                                [className isEqualToString:@"MyTextView"] ||
+                                [className isEqualToString:@"HPTextViewInternal"];
+
+                            if (isEditor) {
+                                view.backgroundColor = UIColor.clearColor;
+                                view.layer.backgroundColor = UIColor.clearColor.CGColor;
+                                view.layer.opaque = NO;
+                            }
+                        }
+
+                        for (UIView *subview in view.subviews) {
+                            [stack addObject:subview];
+                        }
+                    }
+
+                    for (UIView *view in inputView.subviews) {
+                        NSString *className = NSStringFromClass(view.class).lowercaseString;
+
+                        if ([className isEqualToString:@"_uibarbbackground"] ||
+                            [className containsString:@"blur"] ||
+                            [view isKindOfClass:[UIImageView class]]) {
+                            view.hidden = YES;
+                            view.alpha = 0.0;
+                        }
+                    }
+                }), types);
+            }
+        }
+
+        Class toolbarClass = objc_getClass("KBToolbarView");
+        if (toolbarClass) {
+            SEL sel = @selector(layoutSubviews);
+            Method method = class_getInstanceMethod(toolbarClass, sel);
+            if (method) {
+                const char *types = method_getTypeEncoding(method);
+                IMP original = method_getImplementation(method);
+                SEL alias = sel_registerName("zth_orig_KBToolbarView_layoutSubviews");
+
+                if (!class_getInstanceMethod(toolbarClass, alias)) {
+                    class_addMethod(toolbarClass, alias, original, types);
+                }
+
+                class_replaceMethod(toolbarClass, sel, imp_implementationWithBlock(^(id self) {
+                    IMP imp = class_getMethodImplementation(toolbarClass, alias);
+                    if (imp) {
+                        ((void (*)(id, SEL))imp)(self, alias);
+                    }
+
+                    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) {
+                        return;
+                    }
+
+                    UIView *toolbarView = (UIView *)self;
+                    toolbarView.backgroundColor = UIColor.clearColor;
+                    toolbarView.layer.backgroundColor = UIColor.clearColor.CGColor;
+                    toolbarView.layer.opaque = NO;
+
+                    for (UIView *view in toolbarView.subviews) {
+                        NSString *className = NSStringFromClass(view.class).lowercaseString;
+
+                        if ([className isEqualToString:@"_uibarbbackground"] ||
+                            [className containsString:@"background"] ||
+                            [className containsString:@"blur"] ||
                             [view isKindOfClass:[UIImageView class]]) {
                             view.hidden = YES;
                             view.alpha = 0.0;
@@ -255,8 +310,6 @@ static void ZTHInstallBottomTransparencyHooks(void) {
             }
         }
     });
-
-    NSLog(@"[ZolaTheme] bottom transparency hook installed (legacy UITabBar layout)");
 }
 
 @interface ZTHSettingsViewController : UITableViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate, UIDocumentPickerDelegate>
