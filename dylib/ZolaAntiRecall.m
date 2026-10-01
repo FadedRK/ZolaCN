@@ -473,65 +473,6 @@ static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
 
 @end
 
-static UIViewController *ZARTopViewController(void) {
-    UIWindow *keyWindow = nil;
-
-    for (UIScene *scene in
-         [UIApplication sharedApplication].connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-
-        for (UIWindow *window in
-             ((UIWindowScene *)scene).windows) {
-            if (window.isKeyWindow) {
-                keyWindow = window;
-                break;
-            }
-        }
-
-        if (keyWindow) break;
-    }
-
-    if (!keyWindow) return nil;
-
-    UIViewController *vc = keyWindow.rootViewController;
-
-    while (vc.presentedViewController) {
-        vc = vc.presentedViewController;
-    }
-
-    BOOL changed = YES;
-    while (changed) {
-        changed = NO;
-
-        if ([vc isKindOfClass:[UINavigationController class]]) {
-            UIViewController *visible =
-                ((UINavigationController *)vc).visibleViewController;
-            if (visible && visible != vc) {
-                vc = visible;
-                changed = YES;
-                continue;
-            }
-        }
-
-        if ([vc isKindOfClass:[UITabBarController class]]) {
-            UIViewController *selected =
-                ((UITabBarController *)vc).selectedViewController;
-            if (selected && selected != vc) {
-                vc = selected;
-                changed = YES;
-                continue;
-            }
-        }
-
-        if (vc.presentedViewController) {
-            vc = vc.presentedViewController;
-            changed = YES;
-        }
-    }
-
-    return vc;
-}
-
 static BOOL ZARLooksLikeSettings(UIViewController *vc) {
     if (!vc) return NO;
 
