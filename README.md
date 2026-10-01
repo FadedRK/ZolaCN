@@ -2,13 +2,13 @@
 
 ZolaCN is a standalone iOS dynamic library for Zalo that provides Chinese runtime localization, anti-recall support, and theme customization.
 
-## Current Release — v1.0.1
+## Current Release — v1.0.2
 
 **Stable public release**
 
 Release assets:
 - **`ZolaCN.dylib`** — standalone build for TrollStore + TrollFools.
-- **`com.fadedrk.zolacn_1.0.1_iphoneos-arm64.deb`** — Debian package for jailbreak package managers.
+- **`com.fadedrk.zolacn_1.0.2_iphoneos-arm64.deb`** — Debian package for jailbreak package managers.
 - **`SHA256SUMS.txt`** — release checksums.
 
 Target bundle identifier:
@@ -19,7 +19,7 @@ vn.com.vng.zingalo
 
 ## Zalo Compatibility
 
-v1.0.1 enables runtime hooks only for the latest six Zalo App Store versions available when the release was prepared:
+v1.0.2 enables runtime hooks only for the latest six Zalo App Store versions available when the release was prepared:
 
 | Zalo version | Status |
 | --- | --- |
@@ -61,7 +61,7 @@ The version list was checked against Zalo's App Store version history on 2026-10
 - Input transparency is applied to live instances during parent layout; no `setBackgroundColor:` hook is used.
 
 ## Install — dylib
-1. Download **`ZolaCN.dylib`** from the v1.0.1 Release.
+1. Download **`ZolaCN.dylib`** from the v1.0.2 Release.
 2. Open TrollFools and select Zalo.
 3. Inject `ZolaCN.dylib`.
 4. Completely terminate Zalo and launch it again.
