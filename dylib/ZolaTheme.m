@@ -198,75 +198,65 @@ static void ZTHRetrySubMenuButtonHook(void) {
     }
 }
 
-static void ZTHApplyBottomTransparencyToTabBar(UITabBar *bar) {
-    if (!bar) return;
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) return;
-
-    // Verified structure:
-    // UITabBar -> _UIBarBackground -> UIImageView.
-    // Only the actual tab bar background is cleared here.
-    // KBToolbarView (chat input) is intentionally NOT touched.
-    for (UIView *subview in bar.subviews) {
-        if (![NSStringFromClass(subview.class) isEqualToString:@"_UIBarBackground"]) continue;
-
-        subview.backgroundColor = UIColor.clearColor;
-        subview.opaque = NO;
-
-        for (UIView *child in subview.subviews) {
-            if ([child isKindOfClass:[UIImageView class]]) {
-                child.alpha = 0.0;
-                child.backgroundColor = UIColor.clearColor;
-                child.opaque = NO;
-            }
-        }
-        break;
-    }
-
-    bar.backgroundColor = UIColor.clearColor;
-    bar.opaque = NO;
-    bar.translucent = YES;
-}
-
-static void ZTHScheduleTabBarApply(UITabBar *bar) {
-    if (!bar) return;
-    ZTHApplyBottomTransparencyToTabBar(bar);
-
-    const NSTimeInterval delays[] = {0.05, 0.2, 0.5, 1.0, 2.0};
-    for (NSUInteger i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
-        NSTimeInterval delay = delays[i];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            if (bar.window) ZTHApplyBottomTransparencyToTabBar(bar);
-        });
-    }
-}
-
 static void ZTHInstallBottomTransparencyHooks(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        /*
+         * Ported from the previously working ZolaTheme implementation.
+         *
+         * Important: only UITabBar is hooked here.
+         * KBToolbarView / KBChatInputComponentView are intentionally untouched,
+         * so the chat input box keeps its original opaque background.
+         */
         Class tabBarClass = objc_getClass("UITabBar");
         if (tabBarClass) {
-            SEL sel = @selector(didMoveToWindow);
+            SEL sel = @selector(layoutSubviews);
             Method method = class_getInstanceMethod(tabBarClass, sel);
             if (method) {
                 const char *types = method_getTypeEncoding(method);
                 IMP original = method_getImplementation(method);
-                SEL alias = sel_registerName("zth_orig_UITabBar_didMoveToWindow");
+                SEL alias = sel_registerName("zth_orig_UITabBar_layoutSubviews");
+
                 if (!class_getInstanceMethod(tabBarClass, alias)) {
                     class_addMethod(tabBarClass, alias, original, types);
                 }
+
                 class_replaceMethod(tabBarClass, sel, imp_implementationWithBlock(^(id self) {
                     IMP imp = class_getMethodImplementation(tabBarClass, alias);
-                    if (imp) ((void (*)(id, SEL))imp)(self, alias);
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        ZTHScheduleTabBarApply((UITabBar *)self);
-                    });
+                    if (imp) {
+                        ((void (*)(id, SEL))imp)(self, alias);
+                    }
+
+                    UITabBar *tabBar = (UITabBar *)self;
+                    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) {
+                        return;
+                    }
+
+                    tabBar.backgroundColor = UIColor.clearColor;
+                    tabBar.layer.backgroundColor = UIColor.clearColor.CGColor;
+                    tabBar.layer.opaque = NO;
+                    tabBar.layer.shadowOpacity = 0.0;
+
+                    /*
+                     * Match the old ZolaTheme behavior:
+                     * hide only the direct background layers of UITabBar.
+                     * Do not recurse into the tab buttons/content.
+                     */
+                    for (UIView *view in tabBar.subviews) {
+                        NSString *className = NSStringFromClass(view.class);
+
+                        if ([className isEqualToString:@"_UIBarBackground"] ||
+                            [view isKindOfClass:[UIImageView class]]) {
+                            view.hidden = YES;
+                            view.alpha = 0.0;
+                        }
+                    }
                 }), types);
             }
         }
     });
 
-    NSLog(@"[ZolaTheme] bottom transparency hook installed (UITabBar only)");
+    NSLog(@"[ZolaTheme] bottom transparency hook installed (legacy UITabBar layout)");
 }
 
 @interface ZTHSettingsViewController : UITableViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate, UIDocumentPickerDelegate>
