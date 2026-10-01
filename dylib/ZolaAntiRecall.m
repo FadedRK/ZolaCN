@@ -277,6 +277,10 @@ static void ZARInit(void) {
 
 #pragma mark - Settings Entry
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 static NSInteger const ZARSettingsEntryTag = 0x5A415253;
 
 @interface ZARSettingsViewController : UITableViewController
@@ -473,6 +477,47 @@ static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
 
 @end
 
+@implementation ZARSettingsEntryTarget
+
++ (instancetype)shared {
+    static ZARSettingsEntryTarget *target;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        target = [ZARSettingsEntryTarget new];
+    });
+    return target;
+}
+
+- (void)open {
+    UIViewController *top = self;
+    UIWindow *window = nil;
+    for (UIWindowScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (scene.activationState == UISceneActivationStateForegroundActive) {
+            for (UIWindow *candidate in scene.windows) {
+                if (candidate.isKeyWindow) {
+                    window = candidate;
+                    break;
+                }
+            }
+        }
+        if (window) break;
+    }
+    if (!window) window = UIApplication.sharedApplication.keyWindow;
+    UIViewController *root = window.rootViewController;
+    while (root.presentedViewController) root = root.presentedViewController;
+    if ([root isKindOfClass:[UINavigationController class]]) {
+        UIViewController *visible = [(UINavigationController *)root visibleViewController];
+        if (visible) root = visible;
+    }
+    if (!root) return;
+
+    ZARSettingsViewController *settings = [ZARSettingsViewController new];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:settings];
+    [root presentViewController:nav animated:YES completion:nil];
+}
+
+@end
+
 static BOOL ZARLooksLikeSettings(UIViewController *vc) {
     if (!vc) return NO;
 
@@ -580,3 +625,7 @@ void ZARInstallSettings(void) {
         NSLog(@"[ZolaCN][AntiRecall] settings hook installed");
     });
 }
+
+#ifdef __cplusplus
+}
+#endif
