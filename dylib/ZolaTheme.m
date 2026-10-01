@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import "ZolaCompatibility.h"
 
 static NSString * const ZTHMyBubbleKey = @"ZolaThemeMyBubblePath";
 static NSString * const ZTHOtherBubbleKey = @"ZolaThemeOtherBubblePath";
@@ -198,118 +199,218 @@ static void ZTHRetrySubMenuButtonHook(void) {
     }
 }
 
-static void ZTHInstallBottomTransparencyHooks(void) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        Class inputClass = objc_getClass("KBChatInputComponentView");
-        if (inputClass) {
-            SEL sel = @selector(layoutSubviews);
-            Method method = class_getInstanceMethod(inputClass, sel);
-            if (method) {
-                const char *types = method_getTypeEncoding(method);
-                IMP original = method_getImplementation(method);
-                SEL alias = sel_registerName("zth_orig_KBChatInputComponentView_layoutSubviews");
+typedef void (*ZTHLayoutHandler)(UIView *view);
 
-                if (!class_getInstanceMethod(inputClass, alias)) {
-                    class_addMethod(inputClass, alias, original, types);
-                }
+static void ZTHApplyNavigationBackground(UIView *view) {
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHTopTransparentKey]) {
+        return;
+    }
 
-                class_replaceMethod(inputClass, sel, imp_implementationWithBlock(^(id self) {
-                    IMP imp = class_getMethodImplementation(inputClass, alias);
-                    if (imp) {
-                        ((void (*)(id, SEL))imp)(self, alias);
-                    }
+    view.backgroundColor = UIColor.clearColor;
+    view.layer.backgroundColor = UIColor.clearColor.CGColor;
+    view.layer.opaque = NO;
+    view.layer.contents = nil;
 
-                    UIView *inputView = (UIView *)self;
-                    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) {
-                        return;
-                    }
+    for (UIView *subview in view.subviews) {
+        if ([subview isKindOfClass:[UIImageView class]]) {
+            subview.hidden = YES;
+            subview.alpha = 0.0;
+        }
+    }
+}
 
-                    inputView.backgroundColor = UIColor.clearColor;
-                    inputView.layer.backgroundColor = UIColor.clearColor.CGColor;
-                    inputView.layer.opaque = NO;
+static void ZTHApplyUXNavigationBar(UIView *view) {
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHTopTransparentKey]) {
+        return;
+    }
 
-                    NSMutableArray *stack = [NSMutableArray arrayWithObject:inputView];
-                    while (stack.count) {
-                        UIView *view = stack.lastObject;
-                        [stack removeLastObject];
+    view.backgroundColor = UIColor.clearColor;
+    view.layer.backgroundColor = UIColor.clearColor.CGColor;
+    view.layer.opaque = NO;
+    view.layer.shadowOpacity = 0.0;
+}
 
-                        if (view != inputView) {
-                            NSString *className = NSStringFromClass(view.class);
-                            BOOL isEditor =
-                                [className isEqualToString:@"HPGrowingTextView"] ||
-                                [className isEqualToString:@"MyTextView"] ||
-                                [className isEqualToString:@"HPTextViewInternal"];
+static void ZTHApplyTabBar(UIView *view) {
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) {
+        return;
+    }
 
-                            if (isEditor) {
-                                view.backgroundColor = UIColor.clearColor;
-                                view.layer.backgroundColor = UIColor.clearColor.CGColor;
-                                view.layer.opaque = NO;
-                            }
-                        }
+    view.backgroundColor = UIColor.clearColor;
+    view.layer.backgroundColor = UIColor.clearColor.CGColor;
+    view.layer.opaque = NO;
+    view.layer.shadowOpacity = 0.0;
 
-                        for (UIView *subview in view.subviews) {
-                            [stack addObject:subview];
-                        }
-                    }
+    for (UIView *subview in view.subviews) {
+        NSString *className = NSStringFromClass(subview.class);
 
-                    for (UIView *view in inputView.subviews) {
-                        NSString *className = NSStringFromClass(view.class).lowercaseString;
+        if ([className isEqualToString:@"_UIBarBackground"] ||
+            [subview isKindOfClass:[UIImageView class]]) {
+            subview.hidden = YES;
+            subview.alpha = 0.0;
+        }
+    }
+}
 
-                        if ([className isEqualToString:@"_uibarbbackground"] ||
-                            [className containsString:@"blur"] ||
-                            [view isKindOfClass:[UIImageView class]]) {
-                            view.hidden = YES;
-                            view.alpha = 0.0;
-                        }
-                    }
-                }), types);
+static void ZTHApplyChatInput(UIView *inputView) {
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) {
+        return;
+    }
+
+    inputView.backgroundColor = UIColor.clearColor;
+    inputView.layer.backgroundColor = UIColor.clearColor.CGColor;
+    inputView.layer.opaque = NO;
+
+    /*
+     * Stable runtime path observed in the user's Zalo build:
+     * KBToolbarView -> HPGrowingTextView -> MyTextView -> HPTextViewInternal.
+     *
+     * We modify the live instances from their parent layout pass instead of
+     * hooking backgroundColor setters. The latter caused launch hangs in testing.
+     */
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:inputView];
+
+    while (stack.count) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+
+        if (view != inputView) {
+            NSString *className = NSStringFromClass(view.class);
+
+            if ([className isEqualToString:@"HPGrowingTextView"] ||
+                [className isEqualToString:@"MyTextView"] ||
+                [className isEqualToString:@"HPTextViewInternal"]) {
+                view.backgroundColor = UIColor.clearColor;
+                view.layer.backgroundColor = UIColor.clearColor.CGColor;
+                view.layer.opaque = NO;
             }
         }
 
-        Class toolbarClass = objc_getClass("KBToolbarView");
-        if (toolbarClass) {
-            SEL sel = @selector(layoutSubviews);
-            Method method = class_getInstanceMethod(toolbarClass, sel);
-            if (method) {
-                const char *types = method_getTypeEncoding(method);
-                IMP original = method_getImplementation(method);
-                SEL alias = sel_registerName("zth_orig_KBToolbarView_layoutSubviews");
+        [stack addObjectsFromArray:view.subviews];
+    }
 
-                if (!class_getInstanceMethod(toolbarClass, alias)) {
-                    class_addMethod(toolbarClass, alias, original, types);
-                }
+    for (UIView *view in inputView.subviews) {
+        NSString *className = NSStringFromClass(view.class).lowercaseString;
 
-                class_replaceMethod(toolbarClass, sel, imp_implementationWithBlock(^(id self) {
-                    IMP imp = class_getMethodImplementation(toolbarClass, alias);
-                    if (imp) {
-                        ((void (*)(id, SEL))imp)(self, alias);
-                    }
+        if ([className isEqualToString:@"_uibarbbackground"] ||
+            [className containsString:@"blur"] ||
+            [view isKindOfClass:[UIImageView class]]) {
+            view.hidden = YES;
+            view.alpha = 0.0;
+        }
+    }
+}
 
-                    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) {
-                        return;
-                    }
+static void ZTHApplyToolbar(UIView *toolbarView) {
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) {
+        return;
+    }
 
-                    UIView *toolbarView = (UIView *)self;
-                    toolbarView.backgroundColor = UIColor.clearColor;
-                    toolbarView.layer.backgroundColor = UIColor.clearColor.CGColor;
-                    toolbarView.layer.opaque = NO;
+    toolbarView.backgroundColor = UIColor.clearColor;
+    toolbarView.layer.backgroundColor = UIColor.clearColor.CGColor;
+    toolbarView.layer.opaque = NO;
 
-                    for (UIView *view in toolbarView.subviews) {
-                        NSString *className = NSStringFromClass(view.class).lowercaseString;
+    for (UIView *view in toolbarView.subviews) {
+        NSString *className = NSStringFromClass(view.class).lowercaseString;
 
-                        if ([className isEqualToString:@"_uibarbbackground"] ||
-                            [className containsString:@"background"] ||
-                            [className containsString:@"blur"] ||
-                            [view isKindOfClass:[UIImageView class]]) {
-                            view.hidden = YES;
-                            view.alpha = 0.0;
-                        }
-                    }
-                }), types);
+        if ([className isEqualToString:@"_uibarbbackground"] ||
+            [className containsString:@"background"] ||
+            [className containsString:@"blur"] ||
+            [view isKindOfClass:[UIImageView class]]) {
+            view.hidden = YES;
+            view.alpha = 0.0;
+        }
+    }
+}
+
+static BOOL ZTHInstallLayoutHook(NSString *className,
+                                 SEL selector,
+                                 SEL alias,
+                                 ZTHLayoutHandler handler) {
+    Class cls = objc_getClass(className.UTF8String);
+    if (!cls) return NO;
+
+    Method method = class_getInstanceMethod(cls, selector);
+    if (!method) return NO;
+
+    if (class_getInstanceMethod(cls, alias)) {
+        return YES;
+    }
+
+    const char *types = method_getTypeEncoding(method);
+    IMP original = method_getImplementation(method);
+
+    class_addMethod(cls, alias, original, types);
+
+    class_replaceMethod(
+        cls,
+        selector,
+        imp_implementationWithBlock(^(id self) {
+            IMP orig =
+                class_getMethodImplementation(cls, alias);
+
+            if (orig) {
+                ((void (*)(id, SEL))orig)(self, alias);
             }
+
+            if (ZLCNIsSupportedZaloVersion() && handler) {
+                handler((UIView *)self);
+            }
+        }),
+        types);
+
+    NSLog(@"[ZolaTheme] installed layout hook for %@", className);
+    return YES;
+}
+
+static void ZTHInstallBottomTransparencyHooks(void) {
+    static dispatch_once_t onceToken;
+
+    dispatch_once(&onceToken, ^{
+        /*
+         * Retry because Zalo's private classes may be loaded lazily after the
+         * dylib constructor runs.
+         */
+        for (NSUInteger i = 0; i <= 40; i++) {
+            dispatch_after(
+                dispatch_time(DISPATCH_TIME_NOW,
+                              (int64_t)(i * 0.25 * NSEC_PER_SEC)),
+                dispatch_get_main_queue(), ^{
+                    if (!ZLCNIsSupportedZaloVersion()) return;
+
+                    ZTHInstallLayoutHook(
+                        @"_ZDSNavigationBarBackgroundView",
+                        @selector(layoutSubviews),
+                        sel_registerName("zth_orig_ZDSNavigationBarBackgroundView_layoutSubviews"),
+                        ZTHApplyNavigationBackground);
+
+                    ZTHInstallLayoutHook(
+                        @"UXNavigationBar",
+                        @selector(layoutSubviews),
+                        sel_registerName("zth_orig_UXNavigationBar_layoutSubviews"),
+                        ZTHApplyUXNavigationBar);
+
+                    ZTHInstallLayoutHook(
+                        @"UITabBar",
+                        @selector(layoutSubviews),
+                        sel_registerName("zth_orig_UITabBar_layoutSubviews"),
+                        ZTHApplyTabBar);
+
+                    ZTHInstallLayoutHook(
+                        @"KBChatInputComponentView",
+                        @selector(layoutSubviews),
+                        sel_registerName("zth_orig_KBChatInputComponentView_layoutSubviews"),
+                        ZTHApplyChatInput);
+
+                    ZTHInstallLayoutHook(
+                        @"KBToolbarView",
+                        @selector(layoutSubviews),
+                        sel_registerName("zth_orig_KBToolbarView_layoutSubviews"),
+                        ZTHApplyToolbar);
+                });
         }
     });
+
+    NSLog(@"[ZolaTheme] top/bottom transparency hook installer scheduled");
 }
 
 @interface ZTHSettingsViewController : UITableViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate, UIDocumentPickerDelegate>
@@ -557,6 +658,12 @@ void ZTHOpenSettings(UIViewController *presentingViewController) {
 __attribute__((constructor))
 static void ZTHInit(void) {
     @autoreleasepool {
+        if (!ZLCNIsSupportedZaloVersion()) {
+            NSLog(@"[ZolaTheme] unsupported Zalo version %@; theme hooks disabled",
+                  ZLCNCurrentZaloVersion());
+            return;
+        }
+
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
         if (![d objectForKey:ZTHGlobalBackgroundKey]) [d setBool:NO forKey:ZTHGlobalBackgroundKey];
         if (![d objectForKey:ZTHTopTransparentKey]) [d setBool:YES forKey:ZTHTopTransparentKey];
