@@ -1,9 +1,13 @@
 #import <Foundation/Foundation.h>
 
-NS_ASSUME_NONNULL_BEGIN
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 FOUNDATION_EXPORT NSString *ZLCNCurrentZaloVersion(void);
 FOUNDATION_EXPORT BOOL ZLCNIsSupportedZaloVersion(void);
 FOUNDATION_EXPORT NSString *ZLCNSupportedZaloVersionRange(void);
 
-NS_ASSUME_NONNULL_END
+#ifdef __cplusplus
+}
+#endif
