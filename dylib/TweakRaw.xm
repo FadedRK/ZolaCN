@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import "ZolaCompatibility.h"
 
 extern const unsigned char ZLCNTranslationsPlist[];
 extern const unsigned long ZLCNTranslationsPlistLength;
@@ -205,176 +206,6 @@ static void ZLCNInstallUIKit(void) {
     ZLCNSwizzle(UITextField.class, @selector(setPlaceholder:), (IMP)ZLCNField, sel_registerName("zlc_orig_field_setPlaceholder:"));
 }
 
-#pragma mark - Anti Recall
-
-static void (*ZAROriginalUpdate)(id, SEL, id) = NULL;
-static BOOL ZARInstalled = NO;
-
-static id ZARGet(id obj, NSString *key) {
-    if (!obj) return nil;
-    @try { return [obj valueForKey:key]; } @catch (__unused NSException *e) { return nil; }
-}
-
-static NSString *ZARString(id value) {
-    if (!value || value == [NSNull null]) return nil;
-    if ([value isKindOfClass:[NSString class]]) return value;
-    @try { return [value stringValue]; } @catch (__unused NSException *e) { return nil; }
-}
-
-static BOOL ZARValid(NSString *s) {
-    return ZLCNValidString(s);
-}
-
-static BOOL ZARMyRecall(id entity) {
-    id v = ZARGet(entity, @"_isRecallDelByMySelf");
-    return [v respondsToSelector:@selector(boolValue)] && [v boolValue];
-}
-
-static NSString *ZARKey(id entity) {
-    id mid = ZARGet(entity, @"messageId");
-    NSString *s = ZARString(mid);
-    if (!s.length) s = [mid description];
-    return s.length ? [NSString stringWithFormat:@"ZAR.original.%@", s] : nil;
-}
-
-static BOOL ZARRecallText(NSString *s) {
-    return ZARValid(s) && ![s isEqualToString:@"Message recalled"] && ![s isEqualToString:@"消息已撤回"] && ![s isEqualToString:@"Tin nhắn đã được thu hồi"];
-}
-
-static void ZARRemember(id entity) {
-    NSString *msg = ZARString(ZARGet(entity, @"message"));
-    NSString *key = ZARKey(entity);
-    if (!ZARRecallText(msg) || !key) return;
-    [[NSUserDefaults standardUserDefaults] setObject:msg forKey:key];
-}
-
-static NSString *ZAROriginalMessage(id entity) {
-    NSString *origin = ZARString(ZARGet(entity, @"originTextRecallMsg"));
-    if (ZARRecallText(origin)) return origin;
-    NSString *key = ZARKey(entity);
-    NSString *cached = key ? [[NSUserDefaults standardUserDefaults] stringForKey:key] : nil;
-    if (ZARRecallText(cached)) return cached;
-    NSString *msg = ZARString(ZARGet(entity, @"message"));
-    if (ZARRecallText(msg)) return msg;
-    return nil;
-}
-
-static BOOL ZARSetMessage(id entity, NSString *msg) {
-    if (!entity || !ZARValid(msg)) return NO;
-    @try {
-        [entity setValue:msg forKey:@"message"];
-        return [ZARString(ZARGet(entity, @"message")) isEqualToString:msg];
-    } @catch (__unused NSException *e) { return NO; }
-}
-
-static BOOL ZARHasRichContent(id entity) {
-    NSString *message = ZARString(ZARGet(entity, @"message"));
-    if (ZARValid(message)) return YES;
-
-    id rich = ZARGet(entity, @"richMsgNormal");
-    NSString *richString = ZARString(rich);
-    if (rich && rich != [NSNull null] && ![richString isEqualToString:@"<null>"] && ![richString isEqualToString:@"<Not Found>"]) return YES;
-
-    NSString *mediaId = ZARString(ZARGet(entity, @"mediaId"));
-    if (ZARValid(mediaId)) return YES;
-
-    id mediaType = ZARGet(entity, @"mediatype");
-    NSInteger mt = [mediaType respondsToSelector:@selector(integerValue)] ? [mediaType integerValue] : [ZARString(mediaType) integerValue];
-    return mt > 0;
-}
-
-static NSString *ZARTag(id entity) {
-    BOOL rich = ZARHasRichContent(entity);
-    NSString *lang = ZLCNLanguage();
-    if ([lang isEqualToString:@"vi"]) return rich ? @"【Nội dung đã bị thu hồi】" : @"【Đã bị thu hồi】";
-    if ([lang isEqualToString:@"en"]) return rich ? @"[Content recalled]" : @"[Recalled]";
-    return rich ? @"【内容已撤回】" : @"【已撤回】";
-}
-
-static void ZARUpdateUndo(id self, SEL _cmd, id entity) {
-    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    BOOL enabled = [d objectForKey:@"ZolaAntiRecallEnabled"] ? [d boolForKey:@"ZolaAntiRecallEnabled"] : YES;
-    BOOL showMine = [d objectForKey:@"ZolaAntiRecallShowMyRecall"] ? [d boolForKey:@"ZolaAntiRecallShowMyRecall"] : YES;
-
-    // Plugin disabled: always let Zalo run its native recall path unchanged.
-    if (!entity || !enabled) {
-        if (ZAROriginalUpdate) ZAROriginalUpdate(self, _cmd, entity);
-        return;
-    }
-
-    BOOL mine = ZARMyRecall(entity);
-
-    // Self recall is independently controlled by the self-recall switch.
-    if (mine && !showMine) {
-        if (ZAROriginalUpdate) ZAROriginalUpdate(self, _cmd, entity);
-        return;
-    }
-
-    /*
-     * IMPORTANT:
-     * Both self-recall and other-party recall must be intercepted here.
-     * For other-party recall, originTextRecallMsg is normally nil, so cache the
-     * BEFORE message first and use it as the source of truth.
-     */
-    NSString *beforeMessage = ZARString(ZARGet(entity, @"message"));
-    if (ZARRecallText(beforeMessage)) {
-        ZARRemember(entity);
-    }
-
-    NSString *original = ZAROriginalMessage(entity);
-    if (!ZARValid(original)) {
-        // We cannot safely reconstruct the original payload. Preserve the entity
-        // only when Zalo has rich-content state; otherwise keep native behavior.
-        if (!ZARHasRichContent(entity)) {
-            if (ZAROriginalUpdate) ZAROriginalUpdate(self, _cmd, entity);
-        } else {
-            NSString *tag = ZARTag(entity);
-            if (!ZARSetMessage(entity, tag) && ZAROriginalUpdate) {
-                ZAROriginalUpdate(self, _cmd, entity);
-            }
-        }
-        return;
-    }
-
-    NSString *tag = ZARTag(entity);
-    NSString *display = [original hasSuffix:tag] ? original : [NSString stringWithFormat:@"%@\n%@", original, tag];
-
-    if (ZARSetMessage(entity, display)) {
-        NSLog(@"[ZolaCN][AntiRecall] preserved %@ recall %@", mine ? @"self" : @"other-party", ZARKey(entity));
-        return;
-    }
-
-    // If the message field cannot be written, do not leave the app in a partial
-    // state; fall back to Zalo's native implementation.
-    if (ZAROriginalUpdate) ZAROriginalUpdate(self, _cmd, entity);
-}
-static void ZARInstall(void) {
-    if (ZARInstalled) return;
-    Class cls = NSClassFromString(@"UndoChatProcessor");
-    if (!cls) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ ZARInstall(); });
-        return;
-    }
-
-    SEL sel = NSSelectorFromString(@"updateUndoMessageContent:");
-    Method m = class_getInstanceMethod(cls, sel);
-    if (!m) {
-        Class meta = object_getClass(cls);
-        m = class_getInstanceMethod(meta, sel);
-    }
-    if (!m) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ ZARInstall(); });
-        return;
-    }
-
-    IMP old = method_getImplementation(m);
-    if (old == (IMP)ZARUpdateUndo) { ZARInstalled = YES; return; }
-    ZAROriginalUpdate = (void (*)(id, SEL, id))old;
-    method_setImplementation(m, (IMP)ZARUpdateUndo);
-    ZARInstalled = YES;
-    NSLog(@"[ZolaCN][AntiRecall] installed updateUndoMessageContent:");
-}
-
 #pragma mark - Settings Entry
 
 extern "C" void ZTHOpenSettings(UIViewController *presentingViewController);
@@ -569,15 +400,31 @@ static void ZARInstallSettingsEntry(void) {
 __attribute__((constructor))
 static void ZLCNInit(void) {
     @autoreleasepool {
-        NSLog(@"[ZolaCN] constructor entered");
+        if (!ZLCNIsSupportedZaloVersion()) {
+            NSLog(@"[ZolaCN] unsupported Zalo version %@; localization is disabled", ZLCNCurrentZaloVersion());
+            return;
+        }
+
+        NSLog(@"[ZolaCN] constructor entered (Zalo %@)",
+              ZLCNCurrentZaloVersion());
+
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-        if (![d objectForKey:ZLCNLanguageKey]) [d setObject:@"zh" forKey:ZLCNLanguageKey];
-        if (![d objectForKey:@"ZolaAntiRecallEnabled"]) [d setBool:YES forKey:@"ZolaAntiRecallEnabled"];
-        if (![d objectForKey:@"ZolaAntiRecallShowMyRecall"]) [d setBool:YES forKey:@"ZolaAntiRecallShowMyRecall"];
+        if (![d objectForKey:ZLCNLanguageKey]) {
+            [d setObject:@"zh" forKey:ZLCNLanguageKey];
+        }
+        if (![d objectForKey:@"ZolaAntiRecallEnabled"]) {
+            [d setBool:YES forKey:@"ZolaAntiRecallEnabled"];
+        }
+        if (![d objectForKey:@"ZolaAntiRecallShowMyRecall"]) {
+            [d setBool:YES forKey:@"ZolaAntiRecallShowMyRecall"];
+        }
+
         ZLCNLoadTranslations();
         ZLCNInstallUIKit();
         ZARInstallSettingsEntry();
-        ZARInstall();
-        NSLog(@"[ZolaCN] initialization complete (%lu translations), language=%@", (unsigned long)ZLCNTranslations.count, ZLCNLanguage());
+
+        NSLog(@"[ZolaCN] initialization complete (%lu translations), language=%@",
+              (unsigned long)ZLCNTranslations.count,
+              ZLCNLanguage());
     }
 }
