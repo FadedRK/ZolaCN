@@ -3,6 +3,8 @@
 #import <objc/runtime.h>
 #import "ZolaCompatibility.h"
 
+extern void ZTHOpenSettings(UIViewController *presentingViewController);
+
 static void (*ZAROriginalUpdate)(id, SEL, id) = NULL;
 static BOOL ZARInstalled = NO;
 
@@ -289,6 +291,7 @@ static NSInteger const ZARSettingsEntryTag = 0x5A415253;
 @interface ZARSettingsEntryTarget : NSObject
 + (instancetype)shared;
 - (void)open;
+- (void)openTheme;
 @end
 
 static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
@@ -310,6 +313,10 @@ static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.tableView.rowHeight = 52.0;
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:ZARSettingText(@"关闭", @"Đóng", @"Close") style:UIBarButtonItemStylePlain target:self action:@selector(closeSettings)];
+    UIScreenEdgePanGestureRecognizer *edge = [[UIScreenEdgePanGestureRecognizer alloc] initWithTarget:self action:@selector(handleEdgePan:)];
+    edge.edges = UIRectEdgeLeft;
+    [self.view addGestureRecognizer:edge];
     self.tableView.backgroundColor = [UIColor systemGroupedBackgroundColor];
     self.title = @"ZolaAntiRecall";
 }
@@ -410,6 +417,17 @@ static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
     }
 
     return cell;
+}
+
+- (void)closeSettings {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)handleEdgePan:(UIScreenEdgePanGestureRecognizer *)gesture {
+    if (gesture.state == UIGestureRecognizerStateEnded) {
+        CGPoint velocity = [gesture velocityInView:self.view];
+        if (velocity.x > 0.0) [self dismissViewControllerAnimated:YES completion:nil];
+    }
 }
 
 - (void)pluginSwitchChanged:(UISwitch *)sender {
@@ -514,6 +532,29 @@ static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
     [root presentViewController:nav animated:YES completion:nil];
 }
 
+- (void)openTheme {
+    UIWindow *window = nil;
+    for (UIWindowScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (scene.activationState == UISceneActivationStateForegroundActive) {
+            for (UIWindow *candidate in scene.windows) {
+                if (candidate.isKeyWindow) {
+                    window = candidate;
+                    break;
+                }
+            }
+        }
+        if (window) break;
+    }
+    UIViewController *root = window.rootViewController;
+    while (root.presentedViewController) root = root.presentedViewController;
+    if ([root isKindOfClass:[UINavigationController class]]) {
+        UIViewController *visible = [(UINavigationController *)root visibleViewController];
+        if (visible) root = visible;
+    }
+    if (!root) return;
+    ZTHOpenSettings(root);
+}
+
 @end
 
 static BOOL ZARLooksLikeSettings(UIViewController *vc) {
@@ -561,6 +602,15 @@ static void ZARConfigureSettingsEntry(UIViewController *vc) {
 
     item.tag = ZARSettingsEntryTag;
     [items addObject:item];
+
+    UIBarButtonItem *themeItem =
+        [[UIBarButtonItem alloc]
+            initWithTitle:@"ZolaTheme"
+            style:UIBarButtonItemStylePlain
+            target:[ZARSettingsEntryTarget shared]
+            action:@selector(openTheme)];
+    themeItem.tag = ZARSettingsEntryTag + 1;
+    [items addObject:themeItem];
 
     vc.navigationItem.rightBarButtonItems = items;
 
