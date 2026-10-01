@@ -625,7 +625,7 @@ static void ZARConfigureSettingsEntry(UIViewController *vc) {
 
     UIBarButtonItem *item =
         [[UIBarButtonItem alloc]
-            initWithTitle:@"ZolaAntiRecall"
+            initWithTitle:@"zola"
             style:UIBarButtonItemStylePlain
             target:[ZARSettingsEntryTarget shared]
             action:@selector(open)];
