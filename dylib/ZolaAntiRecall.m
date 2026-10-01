@@ -8,6 +8,8 @@ extern void ZTHOpenSettings(UIViewController *presentingViewController);
 static void (*ZAROriginalUpdate)(id, SEL, id) = NULL;
 static BOOL ZARInstalled = NO;
 
+void ZARInstallSettings(void);
+
 static id ZARGet(id obj, NSString *key) {
     if (!obj || !key) return nil;
     @try {
