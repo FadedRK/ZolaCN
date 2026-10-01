@@ -269,10 +269,12 @@ __attribute__((constructor))
 static void ZARInit(void) {
     @autoreleasepool {
         if (!ZLCNIsSupportedZaloVersion()) {
-            return;
+            NSLog(@"[ZolaCN][AntiRecall] version %@ is outside the compatibility list; attempting runtime installation anyway",
+                  ZLCNCurrentZaloVersion());
         }
 
         ZARInstall();
+        ZARInstallSettings();
     }
 }
 
@@ -333,7 +335,7 @@ static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
 
 - (NSInteger)tableView:(UITableView *)tableView
  numberOfRowsInSection:(NSInteger)section {
-    return 3;
+    return 4;
 }
 
 - (NSString *)tableView:(UITableView *)tableView
@@ -403,6 +405,12 @@ static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
 
         cell.accessoryView = sw;
         _myRecallSwitch = sw;
+    } else if (indexPath.row == 2) {
+        cell.textLabel.text =
+            ZARSettingText(@"主题 & 界面",
+                           @"Chủ đề & giao diện",
+                           @"Themes & Interface");
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     } else {
         cell.textLabel.text =
             ZARSettingText(@"界面语言",
@@ -489,6 +497,28 @@ static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
     if (indexPath.row == 2) {
+        UIWindow *window = nil;
+        for (UIWindowScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (scene.activationState == UISceneActivationStateForegroundActive) {
+                for (UIWindow *candidate in scene.windows) {
+                    if (candidate.isKeyWindow) {
+                        window = candidate;
+                        break;
+                    }
+                }
+            }
+            if (window) break;
+        }
+
+        UIViewController *root = window.rootViewController;
+        while (root.presentedViewController) root = root.presentedViewController;
+        if ([root isKindOfClass:[UINavigationController class]]) {
+            UIViewController *visible = [(UINavigationController *)root visibleViewController];
+            if (visible) root = visible;
+        }
+
+        if (root) ZTHOpenSettings(root);
+    } else if (indexPath.row == 3) {
         [self chooseLanguage];
     }
 }
@@ -603,14 +633,6 @@ static void ZARConfigureSettingsEntry(UIViewController *vc) {
     item.tag = ZARSettingsEntryTag;
     [items addObject:item];
 
-    UIBarButtonItem *themeItem =
-        [[UIBarButtonItem alloc]
-            initWithTitle:@"ZolaTheme"
-            style:UIBarButtonItemStylePlain
-            target:[ZARSettingsEntryTarget shared]
-            action:@selector(openTheme)];
-    themeItem.tag = ZARSettingsEntryTag + 1;
-    [items addObject:themeItem];
 
     vc.navigationItem.rightBarButtonItems = items;
 
