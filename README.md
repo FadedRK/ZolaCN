@@ -2,13 +2,13 @@
 
 ZolaCN is a standalone iOS dynamic library for Zalo that provides Chinese runtime localization, anti-recall support, and theme customization.
 
-## Current Release — v1.0.2
+## Current Release — v1.0.1
 
 **Stable public release**
 
 Release assets:
 - **`ZolaCN.dylib`** — standalone build for TrollStore + TrollFools.
-- **`com.fadedrk.zolacn_1.0.2_iphoneos-arm64.deb`** — Debian package for jailbreak package managers.
+- **`com.fadedrk.zolacn_1.0.1_iphoneos-arm64.deb`** — Debian package for jailbreak package managers.
 - **`SHA256SUMS.txt`** — release checksums.
 
 Target bundle identifier:
@@ -19,7 +19,7 @@ vn.com.vng.zingalo
 
 ## Zalo Compatibility
 
-v1.0.2 enables runtime hooks only for the latest six Zalo App Store versions available when the release was prepared:
+v1.0.1 enables runtime hooks only for the latest six Zalo App Store versions available when the release was prepared:
 
 | Zalo version | Status |
 | --- | --- |
@@ -30,7 +30,7 @@ v1.0.2 enables runtime hooks only for the latest six Zalo App Store versions ava
 | 26.07.01 | Supported |
 | 26.06.02.1 | Supported |
 
-This list is intentionally explicit. When Zalo publishes a newer build, update `dylib/ZolaCompatibility.m` and release a new ZolaCN version after testing.
+This list is a compatibility reference for runtime diagnostics. Module installation is decided by the presence of the required runtime classes and selectors; a version outside this list does not globally disable the modules.
 
 The version list was checked against Zalo's App Store version history on 2026-10-01. The latest listed release is 26.09.01 (14 Sep 2026).
 
@@ -61,7 +61,7 @@ The version list was checked against Zalo's App Store version history on 2026-10
 - Input transparency is applied to live instances during parent layout; no `setBackgroundColor:` hook is used.
 
 ## Install — dylib
-1. Download **`ZolaCN.dylib`** from the v1.0.2 Release.
+1. Download **`ZolaCN.dylib`** from the v1.0.1 Release.
 2. Open TrollFools and select Zalo.
 3. Inject `ZolaCN.dylib`.
 4. Completely terminate Zalo and launch it again.
@@ -87,6 +87,22 @@ ZolaCN/
 ├── .github/workflows/build-release.yml
 ├── dylib/
 │   ├── Makefile
+│   ├── TweakRaw.xm              # runtime localization + initialization
+│   ├── ZolaAntiRecall.m         # anti-recall + integrated settings
+│   ├── ZolaTheme.m              # bubbles, background, transparency
+│   ├── ZolaCompatibility.h/.m   # runtime version diagnostics
+│   ├── ZolaCN.plist             # target bundle filter
+│   ├── build_embed.py           # embeds translation table
+│   └── build_deb.py             # builds the Debian package
+├── Translations.plist
+├── VERSION
+├── CHANGELOG.md
+└── README.md
+```text
+ZolaCN/
+├── .github/workflows/build-release.yml
+├── dylib/
+│   ├── Makefile
 │   ├── TweakRaw.xm              # runtime localization + settings entry
 │   ├── ZolaAntiRecall.m         # anti-recall runtime
 │   ├── ZolaTheme.m              # bubbles, background, transparency
@@ -102,4 +118,4 @@ ZolaCN/
 
 ## Notes
 
-Runtime behavior depends on Zalo's internal UIKit hierarchy and message-processing classes. v1.0.1 explicitly limits hook installation to the six referenced Zalo versions above; unsupported versions are left untouched.
+Runtime behavior depends on Zalo's internal UIKit hierarchy and message-processing classes. When a required class or selector is unavailable, the corresponding module skips installation safely.
