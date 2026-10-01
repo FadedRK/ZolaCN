@@ -273,3 +273,369 @@ static void ZARInit(void) {
         ZARInstall();
     }
 }
+
+
+#pragma mark - Settings Entry
+
+static NSInteger const ZARSettingsEntryTag = 0x5A415253;
+
+@interface ZARSettingsViewController : UITableViewController
+@end
+
+@interface ZARSettingsEntryTarget : NSObject
++ (instancetype)shared;
+- (void)open;
+@end
+
+static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
+    NSString *language = ZARLanguage();
+    if ([language isEqualToString:@"vi"]) return vi;
+    if ([language isEqualToString:@"en"]) return en;
+    return zh;
+}
+
+@implementation ZARSettingsViewController {
+    UISwitch *_pluginSwitch;
+    UISwitch *_myRecallSwitch;
+}
+
+- (instancetype)init {
+    return [super initWithStyle:UITableViewStyleInsetGrouped];
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.tableView.rowHeight = 52.0;
+    self.tableView.backgroundColor = [UIColor systemGroupedBackgroundColor];
+    self.title = @"ZolaAntiRecall";
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    self.title = @"ZolaAntiRecall";
+    [self.tableView reloadData];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    return 1;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView
+ numberOfRowsInSection:(NSInteger)section {
+    return 3;
+}
+
+- (NSString *)tableView:(UITableView *)tableView
+ titleForHeaderInSection:(NSInteger)section {
+    return ZARSettingText(@"设置", @"Cài đặt", @"Settings");
+}
+
+- (NSString *)tableView:(UITableView *)tableView
+ titleForFooterInSection:(NSInteger)section {
+    return ZARSettingText(
+        @"控制 ZolaAntiRecall 的运行状态。关闭总开关后，撤回消息恢复功能不执行。",
+        @"Điều khiển trạng thái ZolaAntiRecall. Khi tắt công tắc chính, chức năng chống thu hồi sẽ không chạy.",
+        @"Controls ZolaAntiRecall. When the master switch is off, anti-recall is disabled."
+    );
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView
+ cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *reuse = @"ZARSettingsCell";
+    UITableViewCell *cell =
+        [tableView dequeueReusableCellWithIdentifier:reuse];
+
+    if (!cell) {
+        cell = [[UITableViewCell alloc]
+            initWithStyle:UITableViewCellStyleValue1
+            reuseIdentifier:reuse];
+    }
+
+    cell.accessoryView = nil;
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.detailTextLabel.text = nil;
+
+    if (indexPath.row == 0) {
+        cell.textLabel.text =
+            ZARSettingText(@"插件总开关",
+                           @"Công tắc plugin",
+                           @"Plugin Enabled");
+
+        UISwitch *sw = [UISwitch new];
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        sw.on = [defaults objectForKey:@"ZolaAntiRecallEnabled"]
+            ? [defaults boolForKey:@"ZolaAntiRecallEnabled"]
+            : YES;
+
+        [sw addTarget:self
+               action:@selector(pluginSwitchChanged:)
+     forControlEvents:UIControlEventValueChanged];
+
+        cell.accessoryView = sw;
+        _pluginSwitch = sw;
+    } else if (indexPath.row == 1) {
+        cell.textLabel.text =
+            ZARSettingText(@"显示自己撤回的消息",
+                           @"Hiển thị tin nhắn bạn đã thu hồi",
+                           @"Show My Recalled Messages");
+
+        UISwitch *sw = [UISwitch new];
+        sw.on = [NSUserDefaults.standardUserDefaults
+                    objectForKey:@"ZolaAntiRecallShowMyRecall"]
+            ? [NSUserDefaults.standardUserDefaults
+                    boolForKey:@"ZolaAntiRecallShowMyRecall"]
+            : YES;
+
+        [sw addTarget:self
+               action:@selector(myRecallSwitchChanged:)
+     forControlEvents:UIControlEventValueChanged];
+
+        cell.accessoryView = sw;
+        _myRecallSwitch = sw;
+    } else {
+        cell.textLabel.text =
+            ZARSettingText(@"界面语言",
+                           @"Ngôn ngữ giao diện",
+                           @"Interface Language");
+        cell.detailTextLabel.text = ZARSettingText(
+            @"中文",
+            @"Tiếng Việt",
+            @"English"
+        );
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    }
+
+    return cell;
+}
+
+- (void)pluginSwitchChanged:(UISwitch *)sender {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setBool:sender.isOn forKey:@"ZolaAntiRecallEnabled"];
+    [defaults synchronize];
+}
+
+- (void)myRecallSwitchChanged:(UISwitch *)sender {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setBool:sender.isOn forKey:@"ZolaAntiRecallShowMyRecall"];
+    [defaults synchronize];
+}
+
+- (void)chooseLanguage {
+    NSString *title =
+        ZARSettingText(@"界面语言",
+                       @"Ngôn ngữ giao diện",
+                       @"Interface Language");
+
+    UIAlertController *alert =
+        [UIAlertController alertControllerWithTitle:title
+                                            message:nil
+                                     preferredStyle:UIAlertControllerStyleActionSheet];
+
+    for (NSString *code in @[@"zh", @"vi", @"en"]) {
+        NSString *name;
+        if ([code isEqualToString:@"zh"]) name = @"中文";
+        else if ([code isEqualToString:@"vi"]) name = @"Tiếng Việt";
+        else name = @"English";
+
+        [alert addAction:
+            [UIAlertAction actionWithTitle:name
+                                     style:UIAlertActionStyleDefault
+                                   handler:^(__unused UIAlertAction *action) {
+            [[NSUserDefaults standardUserDefaults]
+                setObject:code
+                forKey:@"ZolaAntiRecallInterfaceLanguage"];
+            [[NSUserDefaults standardUserDefaults] synchronize];
+            [self.tableView reloadData];
+        }]];
+    }
+
+    [alert addAction:
+        [UIAlertAction actionWithTitle:
+            ZARSettingText(@"取消", @"Hủy", @"Cancel")
+                                 style:UIAlertActionStyleCancel
+                               handler:nil]];
+
+    if (alert.popoverPresentationController) {
+        alert.popoverPresentationController.sourceView = self.view;
+    }
+
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)tableView:(UITableView *)tableView
+ didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+
+    if (indexPath.row == 2) {
+        [self chooseLanguage];
+    }
+}
+
+@end
+
+static UIViewController *ZARTopViewController(void) {
+    UIWindow *keyWindow = nil;
+
+    for (UIScene *scene in
+         [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+
+        for (UIWindow *window in
+             ((UIWindowScene *)scene).windows) {
+            if (window.isKeyWindow) {
+                keyWindow = window;
+                break;
+            }
+        }
+
+        if (keyWindow) break;
+    }
+
+    if (!keyWindow) return nil;
+
+    UIViewController *vc = keyWindow.rootViewController;
+
+    while (vc.presentedViewController) {
+        vc = vc.presentedViewController;
+    }
+
+    BOOL changed = YES;
+    while (changed) {
+        changed = NO;
+
+        if ([vc isKindOfClass:[UINavigationController class]]) {
+            UIViewController *visible =
+                ((UINavigationController *)vc).visibleViewController;
+            if (visible && visible != vc) {
+                vc = visible;
+                changed = YES;
+                continue;
+            }
+        }
+
+        if ([vc isKindOfClass:[UITabBarController class]]) {
+            UIViewController *selected =
+                ((UITabBarController *)vc).selectedViewController;
+            if (selected && selected != vc) {
+                vc = selected;
+                changed = YES;
+                continue;
+            }
+        }
+
+        if (vc.presentedViewController) {
+            vc = vc.presentedViewController;
+            changed = YES;
+        }
+    }
+
+    return vc;
+}
+
+static BOOL ZARLooksLikeSettings(UIViewController *vc) {
+    if (!vc) return NO;
+
+    NSString *className =
+        NSStringFromClass(vc.class).lowercaseString;
+
+    NSString *title =
+        (vc.navigationItem.title ?: vc.title).lowercaseString;
+
+    if ([className containsString:@"setting"]) return YES;
+
+    NSArray<NSString *> *knownTitles = @[
+        @"cài đặt",
+        @"设置",
+        @"settings",
+        @"setting"
+    ];
+
+    for (NSString *known in knownTitles) {
+        if ([title isEqualToString:known]) return YES;
+    }
+
+    return NO;
+}
+
+static void ZARConfigureSettingsEntry(UIViewController *vc) {
+    if (!ZARLooksLikeSettings(vc)) return;
+
+    NSMutableArray<UIBarButtonItem *> *items =
+        [NSMutableArray arrayWithArray:
+            vc.navigationItem.rightBarButtonItems ?: @[]];
+
+    for (UIBarButtonItem *item in items) {
+        if (item.tag == ZARSettingsEntryTag) return;
+    }
+
+    UIBarButtonItem *item =
+        [[UIBarButtonItem alloc]
+            initWithTitle:@"ZolaAntiRecall"
+            style:UIBarButtonItemStylePlain
+            target:[ZARSettingsEntryTarget shared]
+            action:@selector(open)];
+
+    item.tag = ZARSettingsEntryTag;
+    [items addObject:item];
+
+    vc.navigationItem.rightBarButtonItems = items;
+
+    NSLog(@"[ZolaCN][AntiRecall] settings entry installed on %@",
+          NSStringFromClass(vc.class));
+}
+
+static void ZARSettingsViewDidAppear(UIViewController *self,
+                                     SEL _cmd,
+                                     BOOL animated) {
+    SEL alias =
+        sel_registerName("zcn_zar_orig_viewDidAppear:");
+
+    void (*orig)(id, SEL, BOOL) =
+        (void (*)(id, SEL, BOOL))
+            [self methodForSelector:alias];
+
+    if (orig) {
+        orig(self, alias, animated);
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ZARConfigureSettingsEntry(self);
+    });
+}
+
+void ZARInstallSettings(void) {
+    static dispatch_once_t onceToken;
+
+    dispatch_once(&onceToken, ^{
+        Class cls = UIViewController.class;
+        SEL selector = @selector(viewDidAppear:);
+        SEL alias =
+            sel_registerName("zcn_zar_orig_viewDidAppear:");
+
+        Method method =
+            class_getInstanceMethod(cls, selector);
+
+        if (!method) {
+            NSLog(@"[ZolaCN][AntiRecall] viewDidAppear: not found");
+            return;
+        }
+
+        if (class_getInstanceMethod(cls, alias)) {
+            return;
+        }
+
+        class_addMethod(
+            cls,
+            alias,
+            method_getImplementation(method),
+            method_getTypeEncoding(method)
+        );
+
+        method_setImplementation(
+            method,
+            (IMP)ZARSettingsViewDidAppear
+        );
+
+        NSLog(@"[ZolaCN][AntiRecall] settings hook installed");
+    });
+}
