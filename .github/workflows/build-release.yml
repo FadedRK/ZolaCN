@@ -13,30 +13,12 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 jobs:
-  build-dylib:
+  build-release:
     runs-on: macos-latest
+
     steps:
-      - name: Cleanup previous builds
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "Cleaning previous workflow runs..."
-          gh run list --workflow "build-dylib.yml" --repo "$GITHUB_REPOSITORY" --limit 100 --json databaseId --jq '.[].databaseId' | while read -r RUN_ID; do
-            if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "$GITHUB_RUN_ID" ]; then
-              gh run delete "$RUN_ID" --repo "$GITHUB_REPOSITORY" --confirm || true
-            fi
-          done
-
-          echo "Cleaning previous Actions artifacts..."
-          gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" --jq '.artifacts[].id' | while read -r ARTIFACT_ID; do
-            if [ -n "$ARTIFACT_ID" ]; then
-              gh api --method DELETE "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" || true
-            fi
-          done
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -48,82 +30,103 @@ jobs:
           sdks-src: waruhachi/sdks
           sdks-branch: main
 
-      - name: Read version
-        id: version
-        run: echo "version=$(tr -d '\r\n ' < VERSION)" >> "$GITHUB_OUTPUT"
+      - name: Read release metadata
+        id: release
+        shell: bash
+        run: |
+          VERSION="$(tr -d '\r\n ' < VERSION)"
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Embed translations into dylib
+      - name: Embed translations
         run: python3 dylib/build_embed.py
 
-      - name: Build dylib only
+      - name: Build dylib
+        shell: bash
         run: |
           make -C dylib clean
           make -C dylib
           mkdir -p dist
-          DYLIB=$(find dylib/.theos -type f -name 'ZolaCN.dylib' | head -n 1)
+
+          DYLIB="$(find dylib/.theos -type f -name 'ZolaCN.dylib' | head -n 1)"
           test -n "$DYLIB"
-          cp "$DYLIB" "dist/ZolaCN.dylib"
+
+          cp "$DYLIB" dist/ZolaCN.dylib
           file dist/ZolaCN.dylib
+          lipo -info dist/ZolaCN.dylib
           ls -lh dist/ZolaCN.dylib
 
-      - name: Build BubbleTrace dylib
-        run: |
-          make -C dylib/trace clean
-          make -C dylib/trace
-          mkdir -p dist
-          TRACE=$(find dylib/trace/.theos -type f -name 'BubbleTrace.dylib' | head -n 1)
-          test -n "$TRACE"
-          cp "$TRACE" "dist/BubbleTrace.dylib"
-          file dist/BubbleTrace.dylib
-          ls -lh dist/BubbleTrace.dylib
+      - name: Build Debian package
+        shell: bash
+        run: bash dylib/build_deb.sh
 
-      - name: Verify dylib
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd dist
+          shasum -a 256 ZolaCN.dylib *.deb > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Verify release files
+        shell: bash
         run: |
           test -f dist/ZolaCN.dylib
-          test -f dist/BubbleTrace.dylib
+          test -f dist/*.deb
+          test -f dist/SHA256SUMS.txt
           file dist/ZolaCN.dylib
-          file dist/BubbleTrace.dylib
-          otool -hv dist/ZolaCN.dylib
-          otool -hv dist/BubbleTrace.dylib
+          file dist/*.deb
 
-      - name: Upload BubbleTrace artifact
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: BubbleTrace-dylib
-          path: dist/BubbleTrace.dylib
+          name: ZolaCN-${{ steps.release.outputs.version }}
+          path: |
+            dist/ZolaCN.dylib
+            dist/*.deb
+            dist/SHA256SUMS.txt
           retention-days: 30
 
-      - name: Upload dylib artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ZolaCN-dylib
-          path: dist/ZolaCN.dylib
-          retention-days: 30
-
-      - name: Publish latest release
+      - name: Publish GitHub Release
         if: github.ref == 'refs/heads/main'
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.release.outputs.version }}
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
-          TAG="v${VERSION}"
+          NOTES="$(awk -v ver="$VERSION" '
+            BEGIN { found=0 }
+            index($0, "## [" ver "]") == 1 { found=1; next }
+            /^## \[/ && found { exit }
+            found { print }
+          ' CHANGELOG.md)"
 
-          if [ "$VERSION" = "1.0.0" ]; then
-            for OLD_TAG in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName'); do
-              if [ "$OLD_TAG" != "$TAG" ]; then
-                echo "Deleting old release: $OLD_TAG"
-                gh release delete "$OLD_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
-              fi
-            done
+          if [ -z "$NOTES" ]; then
+            NOTES="ZolaCN $TAG"
           fi
 
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/ZolaCN.dylib --repo "$GITHUB_REPOSITORY" --clobber
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false
+            gh release upload "$TAG" \
+              dist/ZolaCN.dylib \
+              dist/*.deb \
+              dist/SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+
+            gh release edit "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "ZolaCN $TAG" \
+              --notes "$NOTES" \
+              --draft=false \
+              --prerelease=false
           else
-            gh release create "$TAG" dist/ZolaCN.dylib \
+            gh release create "$TAG" \
+              dist/ZolaCN.dylib \
+              dist/*.deb \
+              dist/SHA256SUMS.txt \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "ZolaCN ${TAG}" \
-              --generate-notes
+              --title "ZolaCN $TAG" \
+              --notes "$NOTES"
           fi
