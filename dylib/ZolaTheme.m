@@ -352,7 +352,7 @@ static BOOL ZTHInstallLayoutHook(NSString *className,
                 ((void (*)(id, SEL))orig)(self, alias);
             }
 
-            if (ZLCNIsSupportedZaloVersion() && handler) {
+            if (handler) {
                 handler((UIView *)self);
             }
         }),
@@ -375,8 +375,6 @@ static void ZTHInstallBottomTransparencyHooks(void) {
                 dispatch_time(DISPATCH_TIME_NOW,
                               (int64_t)(i * 0.25 * NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{
-                    if (!ZLCNIsSupportedZaloVersion()) return;
-
                     ZTHInstallLayoutHook(
                         @"_ZDSNavigationBarBackgroundView",
                         @selector(layoutSubviews),
@@ -659,9 +657,8 @@ __attribute__((constructor))
 static void ZTHInit(void) {
     @autoreleasepool {
         if (!ZLCNIsSupportedZaloVersion()) {
-            NSLog(@"[ZolaTheme] unsupported Zalo version %@; theme hooks disabled",
+            NSLog(@"[ZolaTheme] version %@ is outside the compatibility list; continuing theme initialization",
                   ZLCNCurrentZaloVersion());
-            return;
         }
 
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
