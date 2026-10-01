@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.2] — 2026-10-01
+
+Settings-entry and integration fix.
+
+### Fixed
+- Restored the original ZolaAntiRecall settings entry integration inside ZolaCN.
+- Moved the anti-recall settings hook back into the anti-recall module instead of keeping a reduced duplicate in the localization source.
+- Hardened the settings presentation path for nested navigation/tab containers.
+- Restored the anti-recall runtime installation call during ZolaCN initialization.
+
+
 ## [1.0.1] — 2026-10-01
 
 Theme integration and release packaging update.
