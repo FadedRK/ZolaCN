@@ -202,8 +202,10 @@ static void ZTHApplyBottomTransparencyToTabBar(UITabBar *bar) {
     if (!bar) return;
     if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) return;
 
-    // Trace confirmed the visible solid layer is:
-    // UITabBar -> _UIBarBackground -> UIImageView
+    // Verified structure:
+    // UITabBar -> _UIBarBackground -> UIImageView.
+    // Only the actual tab bar background is cleared here.
+    // KBToolbarView (chat input) is intentionally NOT touched.
     for (UIView *subview in bar.subviews) {
         if (![NSStringFromClass(subview.class) isEqualToString:@"_UIBarBackground"]) continue;
 
@@ -212,78 +214,17 @@ static void ZTHApplyBottomTransparencyToTabBar(UITabBar *bar) {
 
         for (UIView *child in subview.subviews) {
             if ([child isKindOfClass:[UIImageView class]]) {
+                child.alpha = 0.0;
                 child.backgroundColor = UIColor.clearColor;
                 child.opaque = NO;
-                child.alpha = 0.0;
             }
         }
-
         break;
     }
 
     bar.backgroundColor = UIColor.clearColor;
     bar.opaque = NO;
     bar.translucent = YES;
-}
-
-static void ZTHApplyBottomTransparencyToToolbar(UIView *toolbar) {
-    if (!toolbar) return;
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) return;
-
-    toolbar.backgroundColor = UIColor.clearColor;
-    toolbar.opaque = NO;
-
-    // KBToolbarView was confirmed by trace as the solid chat-input toolbar.
-    for (UIView *subview in toolbar.subviews) {
-        if ([NSStringFromClass(subview.class) isEqualToString:@"_UIBarBackground"]) {
-            subview.backgroundColor = UIColor.clearColor;
-            subview.opaque = NO;
-            for (UIView *child in subview.subviews) {
-                if ([child isKindOfClass:[UIImageView class]]) {
-                    child.backgroundColor = UIColor.clearColor;
-                    child.opaque = NO;
-                    child.alpha = 0.0;
-                }
-            }
-        }
-    }
-}
-
-static void ZTHApplyBottomTransparencyToTabBar(UITabBar *bar) {
-    if (!bar) return;
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) return;
-
-    UIView *background = nil;
-    for (UIView *subview in bar.subviews) {
-        if ([NSStringFromClass(subview.class) isEqualToString:@"_UIBarBackground"]) {
-            background = subview;
-            break;
-        }
-    }
-    if (!background) return;
-
-    background.backgroundColor = UIColor.clearColor;
-    background.opaque = NO;
-
-    for (UIView *child in background.subviews) {
-        if ([child isKindOfClass:[UIImageView class]]) {
-            child.alpha = 0.0;
-            child.backgroundColor = UIColor.clearColor;
-            child.opaque = NO;
-        }
-    }
-
-    bar.backgroundColor = UIColor.clearColor;
-    bar.opaque = NO;
-    bar.translucent = YES;
-}
-
-static void ZTHApplyBottomTransparencyToToolbar(UIView *toolbar) {
-    if (!toolbar) return;
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:ZTHBottomTransparentKey]) return;
-
-    toolbar.backgroundColor = UIColor.clearColor;
-    toolbar.opaque = NO;
 }
 
 static void ZTHScheduleTabBarApply(UITabBar *bar) {
@@ -323,30 +264,9 @@ static void ZTHInstallBottomTransparencyHooks(void) {
                 }), types);
             }
         }
-
-        Class toolbarClass = objc_getClass("KBToolbarView");
-        if (toolbarClass) {
-            SEL sel = @selector(didMoveToWindow);
-            Method method = class_getInstanceMethod(toolbarClass, sel);
-            if (method) {
-                const char *types = method_getTypeEncoding(method);
-                IMP original = method_getImplementation(method);
-                SEL alias = sel_registerName("zth_orig_KBToolbarView_didMoveToWindow");
-                if (!class_getInstanceMethod(toolbarClass, alias)) {
-                    class_addMethod(toolbarClass, alias, original, types);
-                }
-                class_replaceMethod(toolbarClass, sel, imp_implementationWithBlock(^(id self) {
-                    IMP imp = class_getMethodImplementation(toolbarClass, alias);
-                    if (imp) ((void (*)(id, SEL))imp)(self, alias);
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        ZTHApplyBottomTransparencyToToolbar((UIView *)self);
-                    });
-                }), types);
-            }
-        }
     });
 
-    NSLog(@"[ZolaTheme] bottom transparency hooks installed");
+    NSLog(@"[ZolaTheme] bottom transparency hook installed (UITabBar only)");
 }
 
 @interface ZTHSettingsViewController : UITableViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate, UIDocumentPickerDelegate>
