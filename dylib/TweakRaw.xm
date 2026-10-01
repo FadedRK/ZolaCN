@@ -6,8 +6,14 @@
 extern const unsigned char ZLCNTranslationsPlist[];
 extern const unsigned long ZLCNTranslationsPlistLength;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 extern void ZARInstall(void);
 extern void ZARInstallSettings(void);
+#ifdef __cplusplus
+}
+#endif
 
 #pragma mark - Localization
 
