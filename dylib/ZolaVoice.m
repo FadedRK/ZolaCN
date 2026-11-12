@@ -121,7 +121,7 @@ static NSString *ZVFormatDuration(NSTimeInterval duration) {
         NSURL *url = _audioFiles[indexPath.row - 1];
         AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:nil];
         NSTimeInterval duration = CMTimeGetSeconds(asset.duration);
-        cell.textLabel.text = url.deletingPathExtension.lastPathComponent;
+        cell.textLabel.text = url.URLByDeletingPathExtension.lastPathComponent;
         cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ · %@", ZVFormatDuration(duration), url.pathExtension.uppercaseString];
         cell.imageView.image = [UIImage systemImageNamed:@"waveform"];
         cell.accessoryType = UITableViewCellAccessoryNone;
