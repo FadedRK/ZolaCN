@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <objc/runtime.h>
 
 static NSString * const ZVModeKey = @"ZolaVoiceDurationMode";
 static NSString * const ZVCustomDurationKey = @"ZolaVoiceCustomDuration";
@@ -17,9 +18,73 @@ static NSString *ZVLibraryPath(void) {
     return folder.path;
 }
 
+static const void *ZVCustomDurationAssociationKey = &ZVCustomDurationAssociationKey;
+static IMP ZVOriginalAudioItemDuration;
+static IMP ZVOriginalAddSendingVoice;
+static BOOL ZVRuntimeHooksInstalled;
+
 static NSString *ZVFormatDuration(NSTimeInterval duration) {
     NSInteger seconds = MAX(0, (NSInteger)llround(duration));
     return [NSString stringWithFormat:@"%ld:%02ld", (long)(seconds / 60), (long)(seconds % 60)];
+}
+
+static double ZVAudioItemDuration(id self, SEL cmd) {
+    NSNumber *override = objc_getAssociatedObject(self, ZVCustomDurationAssociationKey);
+    if (override) return override.doubleValue;
+    return ((double (*)(id, SEL))ZVOriginalAudioItemDuration)(self, cmd);
+}
+
+static void ZVAddSendingVoice(id self, SEL cmd, id audioItem, id fileLink, BOOL uploading, long long source) {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if ([defaults integerForKey:ZVModeKey] == 1 && audioItem) {
+        NSInteger seconds = [defaults integerForKey:ZVCustomDurationKey];
+        if (seconds <= 0) seconds = 5;
+        seconds = MIN(seconds, 3600);
+        objc_setAssociatedObject(audioItem, ZVCustomDurationAssociationKey,
+                                 @(seconds), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        NSLog(@"[ZolaCN][Voice] custom outgoing duration enabled: %ld sec", (long)seconds);
+    } else if (audioItem) {
+        objc_setAssociatedObject(audioItem, ZVCustomDurationAssociationKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    ((void (*)(id, SEL, id, id, BOOL, long long))ZVOriginalAddSendingVoice)
+        (self, cmd, audioItem, fileLink, uploading, source);
+}
+
+static void ZVHookDirectMethod(Class cls, SEL selector, IMP replacement, IMP *original) {
+    if (!cls || !selector) return;
+    unsigned int count = 0;
+    Method *methods = class_copyMethodList(cls, &count);
+    Method found = NULL;
+    for (unsigned int i = 0; i < count; i++) {
+        if (method_getName(methods[i]) == selector) { found = methods[i]; break; }
+    }
+    free(methods);
+    if (!found) {
+        NSLog(@"[ZolaCN][Voice] hook target missing: %@ %@", NSStringFromClass(cls), NSStringFromSelector(selector));
+        return;
+    }
+    *original = method_setImplementation(found, replacement);
+    NSLog(@"[ZolaCN][Voice] hook ready: %@ %@", NSStringFromClass(cls), NSStringFromSelector(selector));
+}
+
+void ZVInstall(void) {
+    @synchronized ([NSObject class]) {
+        if (ZVRuntimeHooksInstalled) return;
+        ZVRuntimeHooksInstalled = YES;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 6 * NSEC_PER_SEC),
+                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        @autoreleasepool {
+            Class audioItem = NSClassFromString(@"CommFeatureBase.AudioItem");
+            Class chatController = NSClassFromString(@"BaseChatTVC");
+            ZVHookDirectMethod(audioItem, sel_registerName("duration"),
+                              (IMP)ZVAudioItemDuration, &ZVOriginalAudioItemDuration);
+            ZVHookDirectMethod(chatController,
+                              sel_registerName("addSendingVoiceWithAudioItem:fileLink:uploading:source:"),
+                              (IMP)ZVAddSendingVoice, &ZVOriginalAddSendingVoice);
+        }
+    });
 }
 
 @interface ZolaVoiceSettingsController : UITableViewController <UIDocumentPickerDelegate, AVAudioPlayerDelegate>
