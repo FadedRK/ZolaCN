@@ -161,107 +161,84 @@ static IMP ZVOriginalChatViewDidLayoutSubviews;
 }
 @end
 
-static UILabel *ZVFindVoicePackReferenceLabel(UIView *root) {
+static BOOL ZVFindAttachmentTextCell(UIView *root, UICollectionView **collectionOut,
+                                     UIView **textCellOut, UILabel **labelOut) {
     NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:root];
-    NSSet *names = [NSSet setWithArray:@[@"文本", @"text", @"văn bản", @"van ban"]];
     while (stack.count) {
         UIView *view = stack.lastObject;
         [stack removeLastObject];
         if ([view isKindOfClass:UILabel.class]) {
-            NSString *value = [((UILabel *)view).text.lowercaseString copy] ?: @"";
-            if ([names containsObject:value]) return (UILabel *)view;
+            NSString *value = [((UILabel *)view).text stringByTrimmingCharactersInSet:
+                               NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if ([value isEqualToString:@"文本"] || [value.lowercaseString isEqualToString:@"text"]) {
+                UIView *ancestor = view;
+                while (ancestor && ancestor != root) {
+                    if ([NSStringFromClass(ancestor.class) isEqualToString:@"InputFunctionCell"]) {
+                        UIView *parent = ancestor.superview;
+                        if ([parent isKindOfClass:UICollectionView.class] &&
+                            [NSStringFromClass(parent.class) isEqualToString:@"InputFunctionCollectionView"]) {
+                            if (collectionOut) *collectionOut = (UICollectionView *)parent;
+                            if (textCellOut) *textCellOut = ancestor;
+                            if (labelOut) *labelOut = (UILabel *)view;
+                            return YES;
+                        }
+                    }
+                    ancestor = ancestor.superview;
+                }
+            }
         }
-        for (UIView *child in view.subviews) [stack addObject:child];
-    }
-    return nil;
-}
-
-static UIView *ZVFindTileForLabel(UILabel *label, CGFloat hostWidth) {
-    UIView *candidate = nil;
-    UIView *view = label;
-    while (view.superview) {
-        view = view.superview;
-        CGFloat width = CGRectGetWidth(view.bounds);
-        CGFloat height = CGRectGetHeight(view.bounds);
-        if (width >= hostWidth * 0.17 && width <= hostWidth * 0.34 &&
-            height >= 65.0 && height <= 190.0) {
-            candidate = view;
-            break;
+        for (UIView *child in view.subviews) {
+            if (!child.hidden && child.alpha > 0.05) [stack addObject:child];
         }
     }
-    return candidate;
+    return NO;
 }
 
 static void ZVInjectVoicePackEntry(id controller) {
     if (![controller isKindOfClass:UIViewController.class]) return;
     UIViewController *chatViewController = (UIViewController *)controller;
 
-    // Rate-limit layout retries: the attach panel is created lazily after the chat controller.
     NSNumber *lastAttempt = objc_getAssociatedObject(controller, ZVAttachAttemptMarker);
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     if (lastAttempt && now - lastAttempt.doubleValue < 0.35) return;
     objc_setAssociatedObject(controller, ZVAttachAttemptMarker, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    UIView *attachView = nil;
-    Ivar ivar = class_getInstanceVariable([controller class], "_attachMediaView");
-    if (ivar) {
-        id value = object_getIvar(controller, ivar);
-        if ([value isKindOfClass:UIView.class]) attachView = value;
+    UICollectionView *collectionView = nil;
+    UIView *textCell = nil;
+    UILabel *textLabel = nil;
+    if (!ZVFindAttachmentTextCell(chatViewController.view, &collectionView, &textCell, &textLabel)) return;
+
+    // Trace v2 confirmed: InputFunctionCollectionView is the four-column attachment grid.
+    // "文本" is column 3, row 3; its right-hand column 4 cell is intentionally empty.
+    UIView *host = collectionView.superview; // KBContentView
+    if (!host || ![NSStringFromClass(host.class) isEqualToString:@"KBContentView"]) {
+        NSLog(@"[ZolaCN][Voice] unexpected attachment host for InputFunctionCollectionView: %@",
+              host ? NSStringFromClass(host.class) : @"nil");
+        return;
     }
+    if (objc_getAssociatedObject(host, ZVAttachEntryMarker)) return;
 
-    // Some Zalo builds do not expose the Swift/private attach view ivar.
-    // In that case, search the current chat screen's view tree instead.
-    if (![attachView isKindOfClass:UIView.class] || attachView.hidden) attachView = chatViewController.view;
-    if (![attachView isKindOfClass:UIView.class] || attachView.hidden) return;
-
-    UILabel *referenceLabel = ZVFindVoicePackReferenceLabel(attachView);
-    if (!referenceLabel && attachView != chatViewController.view) {
-        attachView = chatViewController.view;
-        referenceLabel = ZVFindVoicePackReferenceLabel(attachView);
-    }
-    if (!referenceLabel) return;
-
-    UIView *referenceTile = ZVFindTileForLabel(referenceLabel, CGRectGetWidth(attachView.bounds));
-    UIView *grid = referenceTile.superview;
-    if (!referenceTile || !grid) return;
-    if (objc_getAssociatedObject(grid, ZVAttachEntryMarker)) return;
-
-    CGFloat gridWidth = CGRectGetWidth(grid.bounds);
-    CGFloat hostWidth = CGRectGetWidth(attachView.bounds);
-    // A narrow row/container is not the full attachment grid; walk up to the first full-width parent.
-    while (grid.superview && gridWidth < hostWidth * 0.72) {
-        grid = grid.superview;
-        gridWidth = CGRectGetWidth(grid.bounds);
-    }
-    if (gridWidth < hostWidth * 0.72) return;
-
-    // Recompute the reference tile's frame in the selected grid coordinate space.
-    CGRect referenceFrame = [referenceTile.superview convertRect:referenceTile.frame toView:grid];
-    CGFloat width = CGRectGetWidth(referenceFrame);
-    CGFloat height = CGRectGetHeight(referenceFrame);
-    if (width <= 0 || height <= 0) return;
-
-    CGFloat x = CGRectGetMaxX(referenceFrame);
-    CGFloat gap = 0.0;
-    for (UIView *sibling in grid.subviews) {
-        if (sibling == referenceTile) continue;
-        CGRect siblingFrame = [sibling.superview convertRect:sibling.frame toView:grid];
-        if (fabs(CGRectGetMinY(siblingFrame) - CGRectGetMinY(referenceFrame)) > 2.0) continue;
-        CGFloat distance = CGRectGetMinX(siblingFrame) - CGRectGetMaxX(referenceFrame);
-        if (distance > 1.0 && distance < width * 0.5) { gap = distance; break; }
-    }
-    CGRect frame = CGRectMake(x + gap, CGRectGetMinY(referenceFrame), width, height);
-    if (CGRectGetMaxX(frame) > CGRectGetWidth(grid.bounds) + 2.0) {
-        NSLog(@"[ZolaCN][Voice] no free attachment-grid cell to the right of Text");
+    CGRect textFrame = [textCell convertRect:textCell.bounds toView:host];
+    CGFloat width = CGRectGetWidth(textFrame);
+    CGFloat height = CGRectGetHeight(textFrame);
+    CGFloat x = CGRectGetMaxX(textFrame);
+    CGFloat availableWidth = CGRectGetMaxX(host.bounds) - x;
+    if (width <= 0 || height <= 0 || availableWidth < width * 0.9 ||
+        CGRectGetMinX(textFrame) < 0 || x > CGRectGetWidth(host.bounds)) {
+        NSLog(@"[ZolaCN][Voice] measured Text tile has no valid fourth-column slot: %@",
+              NSStringFromCGRect(textFrame));
         return;
     }
 
+    CGRect frame = CGRectMake(x, CGRectGetMinY(textFrame), MIN(width, availableWidth), height);
     UIView *tile = [[UIView alloc] initWithFrame:frame];
     tile.backgroundColor = UIColor.clearColor;
     tile.userInteractionEnabled = YES;
+    tile.accessibilityLabel = @"语音包";
 
-    CGFloat iconSize = MIN(68.0, height * 0.56);
-    UIView *circle = [[UIView alloc] initWithFrame:CGRectMake((width-iconSize)/2.0, 5.0, iconSize, iconSize)];
+    CGFloat iconSize = MIN(58.0, height * 0.62);
+    UIView *circle = [[UIView alloc] initWithFrame:
+                      CGRectMake((CGRectGetWidth(frame)-iconSize)/2.0, 5.0, iconSize, iconSize)];
     circle.backgroundColor = UIColor.systemBlueColor;
     circle.layer.cornerRadius = iconSize / 2.0;
     circle.userInteractionEnabled = NO;
@@ -269,20 +246,21 @@ static void ZVInjectVoicePackEntry(id controller) {
     UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"waveform"]];
     icon.tintColor = UIColor.whiteColor;
     icon.contentMode = UIViewContentModeScaleAspectFit;
-    icon.frame = CGRectMake(iconSize*0.24, iconSize*0.24, iconSize*0.52, iconSize*0.52);
+    icon.frame = CGRectMake(iconSize*0.23, iconSize*0.23, iconSize*0.54, iconSize*0.54);
     [circle addSubview:icon];
     [tile addSubview:circle];
 
-    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(0, CGRectGetMaxY(circle.frame)+7.0, width, 25.0)];
+    UILabel *title = [[UILabel alloc] initWithFrame:
+                      CGRectMake(0, CGRectGetMaxY(circle.frame)+5.0, CGRectGetWidth(frame), 25.0)];
     title.text = @"语音包";
     title.textAlignment = NSTextAlignmentCenter;
-    title.font = referenceLabel.font ?: [UIFont systemFontOfSize:14.0];
-    title.textColor = referenceLabel.textColor ?: UIColor.labelColor;
+    title.font = textLabel.font ?: [UIFont systemFontOfSize:14.0];
+    title.textColor = textLabel.textColor ?: UIColor.labelColor;
     title.userInteractionEnabled = NO;
     [tile addSubview:title];
 
     ZVVoicePackEntryTarget *target = [ZVVoicePackEntryTarget new];
-    target.presenter = (UIViewController *)controller;
+    target.presenter = chatViewController;
     objc_setAssociatedObject(tile, @selector(openVoicePacks), target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -291,11 +269,15 @@ static void ZVInjectVoicePackEntry(id controller) {
     [button addTarget:target action:@selector(openVoicePacks) forControlEvents:UIControlEventTouchUpInside];
     [tile addSubview:button];
 
-    [grid addSubview:tile];
-    [grid bringSubviewToFront:tile];
-    objc_setAssociatedObject(grid, ZVAttachEntryMarker, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    NSLog(@"[ZolaCN][Voice] voice pack entry injected controller=%@ grid=%@ frame=%@",
-          NSStringFromClass([controller class]), NSStringFromClass(grid.class), NSStringFromCGRect(frame));
+    // Add to KBContentView rather than the UICollectionView so scroll contentOffset
+    // cannot shift the injected tile away from the measured empty cell.
+    [host addSubview:tile];
+    [host bringSubviewToFront:tile];
+    objc_setAssociatedObject(host, ZVAttachEntryMarker, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    NSLog(@"[ZolaCN][Voice] voice pack entry injected into fourth column: collection=%@ host=%@ textFrame=%@ entryFrame=%@",
+          NSStringFromClass(collectionView.class), NSStringFromClass(host.class),
+          NSStringFromCGRect(textFrame), NSStringFromCGRect(frame));
 }
 
 static void ZVCreateAttachMediaView(id self, SEL cmd) {
