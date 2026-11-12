@@ -142,6 +142,7 @@ static BOOL ZVExtractZip(NSURL *zipURL, NSString *folder, NSUInteger *importedCo
 
 
 void ZVOpenSettings(UIViewController *presentingViewController);
+static void ZVOpenVoicePackPicker(UIViewController *presentingViewController);
 static const void *ZVAttachEntryMarker = &ZVAttachEntryMarker;
 static IMP ZVOriginalCreateAttachMediaView;
 
@@ -154,7 +155,7 @@ static IMP ZVOriginalCreateAttachMediaView;
 - (void)openVoicePacks {
     UIViewController *presenter = self.presenter;
     if (!presenter || presenter.presentedViewController) return;
-    ZVOpenSettings(presenter);
+    ZVOpenVoicePackPicker(presenter);
 }
 @end
 
@@ -276,6 +277,90 @@ static IMP ZVOriginalAudioItemDuration;
 static IMP ZVOriginalAddSendingVoice;
 static BOOL ZVRuntimeHooksInstalled;
 
+
+static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatController, NSString **errorText) {
+    if (!sourceURL.isFileURL || ![[NSFileManager defaultManager] fileExistsAtPath:sourceURL.path]) {
+        if (errorText) *errorText = @"音频文件不存在";
+        return NO;
+    }
+    SEL addSelector = sel_registerName("addSendingVoiceWithAudioItem:fileLink:uploading:source:");
+    if (!chatController || ![chatController respondsToSelector:addSelector]) {
+        if (errorText) *errorText = @"当前聊天界面不支持原生语音发送";
+        return NO;
+    }
+
+    Class itemClass = NSClassFromString(@"CommFeatureBase.AudioItem");
+    SEL initSelector = sel_registerName("initWithFileId:mediaId:clientId:filePath:");
+    if (!itemClass || ![itemClass instancesRespondToSelector:initSelector]) {
+        if (errorText) *errorText = @"Zalo 语音对象尚未加载，无法创建语音消息";
+        return NO;
+    }
+
+    NSError *fileError = nil;
+    NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:sourceURL.path error:&fileError];
+    unsigned long long fileSize = [attributes[NSFileSize] unsignedLongLongValue];
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:sourceURL options:nil];
+    NSTimeInterval duration = CMTimeGetSeconds(asset.duration);
+    if (fileSize == 0 || !isfinite(duration) || duration <= 0) {
+        if (errorText) *errorText = fileError.localizedDescription ?: @"音频文件为空或时长无法识别";
+        return NO;
+    }
+
+    NSString *stagingFolder = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ZolaCNVoiceSend"];
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:stagingFolder
+                                   withIntermediateDirectories:YES attributes:nil error:&fileError]) {
+        if (errorText) *errorText = fileError.localizedDescription ?: @"无法创建语音发送暂存目录";
+        return NO;
+    }
+    NSString *stagedName = [NSString stringWithFormat:@"%@.%@", NSUUID.UUID.UUIDString, sourceURL.pathExtension.lowercaseString];
+    NSString *stagedPath = [stagingFolder stringByAppendingPathComponent:stagedName];
+    if (![[NSFileManager defaultManager] copyItemAtURL:sourceURL
+                                                 toURL:[NSURL fileURLWithPath:stagedPath]
+                                                 error:&fileError]) {
+        if (errorText) *errorText = fileError.localizedDescription ?: @"无法准备待发送音频";
+        return NO;
+    }
+
+    long long fileID = (long long)llround([[NSDate date] timeIntervalSince1970] * 1000000.0);
+    NSString *mediaID = NSUUID.UUID.UUIDString;
+    NSString *clientID = NSUUID.UUID.UUIDString;
+    id allocated = [itemClass alloc];
+    id (*initializer)(id, SEL, long long, id, id, id) =
+        (id (*)(id, SEL, long long, id, id, id))[allocated methodForSelector:initSelector];
+    id audioItem = initializer ? initializer(allocated, initSelector, fileID, mediaID, clientID, stagedPath) : nil;
+    if (!audioItem) {
+        [[NSFileManager defaultManager] removeItemAtPath:stagedPath error:nil];
+        if (errorText) *errorText = @"Zalo 未能创建原生 AudioItem";
+        return NO;
+    }
+
+    SEL setDurationSelector = sel_registerName("setDuration:");
+    if ([audioItem respondsToSelector:setDurationSelector]) {
+        void (*setDuration)(id, SEL, double) =
+            (void (*)(id, SEL, double))[audioItem methodForSelector:setDurationSelector];
+        if (setDuration) setDuration(audioItem, setDurationSelector, duration);
+    }
+    SEL setSizeSelector = sel_registerName("setFileSize:");
+    if ([audioItem respondsToSelector:setSizeSelector]) {
+        void (*setSize)(id, SEL, long long) =
+            (void (*)(id, SEL, long long))[audioItem methodForSelector:setSizeSelector];
+        if (setSize) setSize(audioItem, setSizeSelector, (long long)fileSize);
+    }
+
+    // Reuse the exact native BaseChatTVC voice-send entry observed in the V5 trace.
+    void (*sendVoice)(id, SEL, id, id, BOOL, long long) =
+        (void (*)(id, SEL, id, id, BOOL, long long))[chatController methodForSelector:addSelector];
+    if (!sendVoice) {
+        [[NSFileManager defaultManager] removeItemAtPath:stagedPath error:nil];
+        if (errorText) *errorText = @"无法调用 Zalo 原生语音发送方法";
+        return NO;
+    }
+    sendVoice(chatController, addSelector, audioItem, nil, YES, 0);
+    NSLog(@"[ZolaCN][Voice] voice pack submitted to native sender: %@ duration=%.3f size=%llu",
+          sourceURL.lastPathComponent, duration, fileSize);
+    return YES;
+}
+
 static NSString *ZVFormatDuration(NSTimeInterval duration) {
     NSInteger seconds = MAX(0, (NSInteger)llround(duration));
     return [NSString stringWithFormat:@"%ld:%02ld", (long)(seconds / 60), (long)(seconds % 60)];
@@ -344,16 +429,28 @@ void ZVInstall(void) {
 }
 
 @interface ZolaVoiceSettingsController : UITableViewController <UIDocumentPickerDelegate, AVAudioPlayerDelegate>
+- (instancetype)initForVoiceSelectionFromController:(UIViewController *)controller;
 @end
 
 @implementation ZolaVoiceSettingsController {
     NSArray<NSURL *> *_audioFiles;
     AVAudioPlayer *_player;
     NSURL *_playingURL;
+    __weak UIViewController *_voiceSendController;
+    BOOL _selectionMode;
 }
 
 - (instancetype)init {
     return [super initWithStyle:UITableViewStyleInsetGrouped];
+}
+
+- (instancetype)initForVoiceSelectionFromController:(UIViewController *)controller {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    if (self) {
+        _voiceSendController = controller;
+        _selectionMode = YES;
+    }
+    return self;
 }
 
 - (void)viewDidLoad {
@@ -571,7 +668,37 @@ void ZVInstall(void) {
     if (indexPath.row == 0) {
         [self importAudio];
     } else {
-        [self playAudioAtURL:_audioFiles[indexPath.row - 1]];
+        NSURL *url = _audioFiles[indexPath.row - 1];
+        if (!_selectionMode) {
+            [self playAudioAtURL:url];
+            return;
+        }
+        UIAlertController *actions = [UIAlertController alertControllerWithTitle:url.lastPathComponent
+                                                                         message:@"选择操作"
+                                                                  preferredStyle:UIAlertControllerStyleActionSheet];
+        [actions addAction:[UIAlertAction actionWithTitle:@"发送语音" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            NSString *errorText = nil;
+            if (ZVSendVoicePackFile(url, _voiceSendController, &errorText)) {
+                UIAlertController *result = [UIAlertController alertControllerWithTitle:@"已提交发送"
+                                                                                 message:@"已调用 Zalo 原生语音发送入口。请确认聊天中出现语音气泡且上传完成。"
+                                                                          preferredStyle:UIAlertControllerStyleAlert];
+                [result addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:result animated:YES completion:nil];
+            } else {
+                UIAlertController *error = [UIAlertController alertControllerWithTitle:@"发送失败"
+                                                                                message:errorText ?: @"无法发送此语音包"
+                                                                         preferredStyle:UIAlertControllerStyleAlert];
+                [error addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:error animated:YES completion:nil];
+            }
+        }]];
+        [actions addAction:[UIAlertAction actionWithTitle:@"试听" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            [self playAudioAtURL:url];
+        }]];
+        [actions addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        actions.popoverPresentationController.sourceView = self.tableView;
+        actions.popoverPresentationController.sourceRect = [self.tableView rectForRowAtIndexPath:indexPath];
+        [self presentViewController:actions animated:YES completion:nil];
     }
 }
 
@@ -592,6 +719,19 @@ void ZVInstall(void) {
 void ZVOpenSettings(UIViewController *presentingViewController) {
     if (!presentingViewController) return;
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:[ZolaVoiceSettingsController new]];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    if (@available(iOS 15.0, *)) {
+        nav.sheetPresentationController.detents = @[UISheetPresentationControllerDetent.largeDetent];
+        nav.sheetPresentationController.prefersGrabberVisible = YES;
+    }
+    [presentingViewController presentViewController:nav animated:YES completion:nil];
+}
+
+static void ZVOpenVoicePackPicker(UIViewController *presentingViewController) {
+    if (!presentingViewController || presentingViewController.presentedViewController) return;
+    ZolaVoiceSettingsController *controller =
+        [[ZolaVoiceSettingsController alloc] initForVoiceSelectionFromController:presentingViewController];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:controller];
     nav.modalPresentationStyle = UIModalPresentationPageSheet;
     if (@available(iOS 15.0, *)) {
         nav.sheetPresentationController.detents = @[UISheetPresentationControllerDetent.largeDetent];
