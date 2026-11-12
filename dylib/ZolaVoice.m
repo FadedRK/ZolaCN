@@ -3,6 +3,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
+#import <zlib.h>
 
 static NSString * const ZVModeKey = @"ZolaVoiceDurationMode";
 static NSString * const ZVCustomDurationKey = @"ZolaVoiceCustomDuration";
@@ -16,6 +17,126 @@ static NSString *ZVLibraryPath(void) {
                                               attributes:nil
                                                    error:nil];
     return folder.path;
+}
+
+
+static uint16_t ZVZip16(const uint8_t *p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+static uint32_t ZVZip32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static BOOL ZVSafeZipEntryName(NSString *name) {
+    if (!name.length || [name hasPrefix:@"/"] || [name containsString:@"\\"]) return NO;
+    for (NSString *part in [name componentsSeparatedByString:@"/"]) {
+        if ([part isEqualToString:@".."] || [part isEqualToString:@"."]) return NO;
+    }
+    return YES;
+}
+static BOOL ZVExtractZip(NSURL *zipURL, NSString *folder, NSUInteger *importedCount, NSError **outError) {
+    NSData *archive = [NSData dataWithContentsOfURL:zipURL options:NSDataReadingMappedIfSafe error:outError];
+    if (!archive || archive.length < 22) return NO;
+    const uint8_t *bytes = archive.bytes;
+    NSUInteger searchStart = archive.length > 65557 ? archive.length - 65557 : 0;
+    NSInteger eocd = -1;
+    for (NSInteger i = (NSInteger)archive.length - 22; i >= (NSInteger)searchStart; i--) {
+        if ((NSUInteger)i + 22 <= archive.length && ZVZip32(bytes + i) == 0x06054b50) {
+            eocd = i;
+            break;
+        }
+    }
+    if (eocd < 0) {
+        if (outError) *outError = [NSError errorWithDomain:@"ZolaVoiceZIP" code:1 userInfo:@{NSLocalizedDescriptionKey:@"ZIP 文件目录损坏或格式不受支持"}];
+        return NO;
+    }
+    uint16_t disk = ZVZip16(bytes + eocd + 4);
+    uint16_t centralDisk = ZVZip16(bytes + eocd + 6);
+    uint16_t entriesOnDisk = ZVZip16(bytes + eocd + 8);
+    uint16_t entries = ZVZip16(bytes + eocd + 10);
+    uint32_t centralSize = ZVZip32(bytes + eocd + 12);
+    uint32_t centralOffset = ZVZip32(bytes + eocd + 16);
+    if (disk != 0 || centralDisk != 0 || entriesOnDisk != entries ||
+        (uint64_t)centralOffset + centralSize > (uint64_t)eocd) {
+        if (outError) *outError = [NSError errorWithDomain:@"ZolaVoiceZIP" code:2 userInfo:@{NSLocalizedDescriptionKey:@"不支持分卷或 ZIP64 压缩包"}];
+        return NO;
+    }
+
+    NSSet *allowed = [NSSet setWithArray:@[@"mp3",@"m4a",@"wav",@"caf",@"aac",@"aif",@"aiff"]];
+    NSUInteger imported = 0;
+    uint64_t totalOutput = 0;
+    uint32_t cursor = centralOffset;
+    for (uint16_t index = 0; index < entries; index++) {
+        if ((uint64_t)cursor + 46 > archive.length || ZVZip32(bytes + cursor) != 0x02014b50) break;
+        const uint8_t *central = bytes + cursor;
+        uint16_t flags = ZVZip16(central + 8);
+        uint16_t method = ZVZip16(central + 10);
+        uint32_t expectedCRC = ZVZip32(central + 16);
+        uint32_t compressedSize = ZVZip32(central + 20);
+        uint32_t uncompressedSize = ZVZip32(central + 24);
+        uint16_t nameLength = ZVZip16(central + 28);
+        uint16_t extraLength = ZVZip16(central + 30);
+        uint16_t commentLength = ZVZip16(central + 32);
+        uint32_t localOffset = ZVZip32(central + 42);
+        uint64_t next = (uint64_t)cursor + 46 + nameLength + extraLength + commentLength;
+        if (next > archive.length) break;
+        NSString *entryName = [[NSString alloc] initWithBytes:central + 46 length:nameLength encoding:NSUTF8StringEncoding];
+        cursor = (uint32_t)next;
+
+        if (!ZVSafeZipEntryName(entryName) || [entryName hasSuffix:@"/"] ||
+            (flags & 1) || (method != 0 && method != 8)) continue;
+        NSString *extension = entryName.pathExtension.lowercaseString;
+        if (![allowed containsObject:extension] || uncompressedSize == 0 ||
+            uncompressedSize > 64U * 1024U * 1024U ||
+            totalOutput + uncompressedSize > 256ULL * 1024ULL * 1024ULL) continue;
+
+        if ((uint64_t)localOffset + 30 > archive.length ||
+            ZVZip32(bytes + localOffset) != 0x04034b50) continue;
+        const uint8_t *local = bytes + localOffset;
+        uint16_t localFlags = ZVZip16(local + 6);
+        uint16_t localMethod = ZVZip16(local + 8);
+        uint16_t localNameLength = ZVZip16(local + 26);
+        uint16_t localExtraLength = ZVZip16(local + 28);
+        uint64_t dataOffset = (uint64_t)localOffset + 30 + localNameLength + localExtraLength;
+        if (localFlags != flags || localMethod != method ||
+            dataOffset + compressedSize > archive.length) continue;
+
+        NSMutableData *output = [NSMutableData dataWithLength:uncompressedSize];
+        if (method == 0) {
+            if (compressedSize != uncompressedSize) continue;
+            memcpy(output.mutableBytes, bytes + dataOffset, uncompressedSize);
+        } else {
+            z_stream stream = {0};
+            stream.next_in = (Bytef *)(bytes + dataOffset);
+            stream.avail_in = compressedSize;
+            stream.next_out = (Bytef *)output.mutableBytes;
+            stream.avail_out = uncompressedSize;
+            if (inflateInit2(&stream, -MAX_WBITS) != Z_OK) continue;
+            int status = inflate(&stream, Z_FINISH);
+            BOOL valid = status == Z_STREAM_END && stream.total_out == uncompressedSize;
+            inflateEnd(&stream);
+            if (!valid) continue;
+        }
+        uLong crc = crc32(0L, Z_NULL, 0);
+        crc = crc32(crc, (const Bytef *)output.bytes, (uInt)output.length);
+        if ((uint32_t)crc != expectedCRC) continue;
+
+        NSString *baseName = entryName.lastPathComponent;
+        NSString *destination = [folder stringByAppendingPathComponent:baseName];
+        if ([NSFileManager.defaultManager fileExistsAtPath:destination]) {
+            destination = [folder stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"%@-%@.%@", baseName.stringByDeletingPathExtension, NSUUID.UUID.UUIDString, extension]];
+        }
+        if ([output writeToFile:destination options:NSDataWritingAtomic error:nil]) {
+            imported++;
+            totalOutput += uncompressedSize;
+        }
+    }
+    if (importedCount) *importedCount = imported;
+    if (!imported) {
+        if (outError) *outError = [NSError errorWithDomain:@"ZolaVoiceZIP" code:3 userInfo:@{NSLocalizedDescriptionKey:@"压缩包中没有可用音频，或音频格式/压缩方式不受支持"}];
+        return NO;
+    }
+    return YES;
 }
 
 static const void *ZVCustomDurationAssociationKey = &ZVCustomDurationAssociationKey;
@@ -150,8 +271,8 @@ void ZVInstall(void) {
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) return @"真实时长模式保留音频实际长度。自定义时长目前仅保存偏好，待接入 Zalo 原生发送链路后生效。";
-    return @"支持 MP3、M4A、WAV、CAF、AAC、AIFF。文件保存在 ZolaCN 私有目录。";
+    if (section == 0) return @"真实模式保留实际时长；自定义模式修改发出语音的时长属性，音频内容本身不变。接收方显示效果应以实际发送测试为准。";
+    return @"支持单个音频或 ZIP 压缩包批量导入。支持 MP3、M4A、WAV、CAF、AAC、AIFF。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -178,8 +299,8 @@ void ZVInstall(void) {
         cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ 秒", [NSString stringWithFormat:@"%.2f", value]];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     } else if (indexPath.row == 0) {
-        cell.textLabel.text = @"导入音频文件";
-        cell.detailTextLabel.text = @"从「文件」App 添加语音";
+        cell.textLabel.text = @"导入语音包";
+        cell.detailTextLabel.text = @"选择音频文件或 ZIP 压缩包批量导入";
         cell.imageView.image = [UIImage systemImageNamed:@"plus.circle"];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     } else {
@@ -234,7 +355,7 @@ void ZVInstall(void) {
 
 - (void)importAudio {
     UIDocumentPickerViewController *picker =
-        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeAudio] asCopy:YES];
+        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeAudio, UTType.zip] asCopy:YES];
     picker.delegate = self;
     picker.allowsMultipleSelection = YES;
     [self presentViewController:picker animated:YES completion:nil];
@@ -243,8 +364,17 @@ void ZVInstall(void) {
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *folder = ZVLibraryPath();
+    NSUInteger zipImported = 0;
+    NSMutableArray<NSString *> *errors = [NSMutableArray array];
     for (NSURL *url in urls) {
         NSString *ext = url.pathExtension.lowercaseString;
+        if ([ext isEqualToString:@"zip"]) {
+            NSError *zipError = nil;
+            NSUInteger count = 0;
+            if (ZVExtractZip(url, folder, &count, &zipError)) zipImported += count;
+            else if (zipError.localizedDescription.length) [errors addObject:zipError.localizedDescription];
+            continue;
+        }
         if (![@[@"mp3", @"m4a", @"wav", @"caf", @"aac", @"aif", @"aiff"] containsObject:ext]) continue;
         NSString *base = url.lastPathComponent.stringByDeletingPathExtension;
         NSString *destination = [folder stringByAppendingPathComponent:url.lastPathComponent];
@@ -258,6 +388,13 @@ void ZVInstall(void) {
         }
     }
     [self reloadAudioFiles];
+    if (zipImported > 0 || errors.count > 0) {
+        NSString *message = zipImported > 0 ? [NSString stringWithFormat:@"已从 ZIP 导入 %lu 个音频文件。", (unsigned long)zipImported] : @"没有导入任何音频文件。";
+        if (errors.count) message = [message stringByAppendingFormat:@"\n%@", [errors componentsJoinedByString:@"\n"]];
+        UIAlertController *result = [UIAlertController alertControllerWithTitle:@"语音包导入结果" message:message preferredStyle:UIAlertControllerStyleAlert];
+        [result addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:result animated:YES completion:nil];
+    }
 }
 
 - (void)playAudioAtURL:(NSURL *)url {
