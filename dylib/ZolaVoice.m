@@ -144,7 +144,9 @@ static BOOL ZVExtractZip(NSURL *zipURL, NSString *folder, NSUInteger *importedCo
 void ZVOpenSettings(UIViewController *presentingViewController);
 static void ZVOpenVoicePackPicker(UIViewController *presentingViewController);
 static const void *ZVAttachEntryMarker = &ZVAttachEntryMarker;
+static const void *ZVAttachAttemptMarker = &ZVAttachAttemptMarker;
 static IMP ZVOriginalCreateAttachMediaView;
+static IMP ZVOriginalChatViewDidLayoutSubviews;
 
 @interface ZVVoicePackEntryTarget : NSObject
 @property (nonatomic, weak) UIViewController *presenter;
@@ -191,35 +193,65 @@ static UIView *ZVFindTileForLabel(UILabel *label, CGFloat hostWidth) {
 }
 
 static void ZVInjectVoicePackEntry(id controller) {
-    Ivar ivar = class_getInstanceVariable(object_getClass(controller), "_attachMediaView");
-    UIView *attachView = ivar ? object_getIvar(controller, ivar) : nil;
-    if (![attachView isKindOfClass:UIView.class] || attachView.hidden ||
-        objc_getAssociatedObject(attachView, ZVAttachEntryMarker)) return;
+    if (![controller isKindOfClass:UIViewController.class]) return;
+
+    // Rate-limit layout retries: the attach panel is created lazily after the chat controller.
+    NSNumber *lastAttempt = objc_getAssociatedObject(controller, ZVAttachAttemptMarker);
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (lastAttempt && now - lastAttempt.doubleValue < 0.35) return;
+    objc_setAssociatedObject(controller, ZVAttachAttemptMarker, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    UIView *attachView = nil;
+    Ivar ivar = class_getInstanceVariable([controller class], "_attachMediaView");
+    if (ivar) {
+        id value = object_getIvar(controller, ivar);
+        if ([value isKindOfClass:UIView.class]) attachView = value;
+    }
+
+    // Some Zalo builds do not expose the Swift/private attach view ivar.
+    // In that case, search the current chat screen's view tree instead.
+    if (![attachView isKindOfClass:UIView.class] || attachView.hidden) attachView = controller.view;
+    if (![attachView isKindOfClass:UIView.class] || attachView.hidden) return;
 
     UILabel *referenceLabel = ZVFindVoicePackReferenceLabel(attachView);
-    if (!referenceLabel) {
-        NSLog(@"[ZolaCN][Voice] attach menu reference label not found; entry skipped");
-        return;
+    if (!referenceLabel && attachView != controller.view) {
+        attachView = controller.view;
+        referenceLabel = ZVFindVoicePackReferenceLabel(attachView);
     }
+    if (!referenceLabel) return;
+
     UIView *referenceTile = ZVFindTileForLabel(referenceLabel, CGRectGetWidth(attachView.bounds));
     UIView *grid = referenceTile.superview;
-    if (!referenceTile || !grid || CGRectGetWidth(grid.bounds) < CGRectGetWidth(attachView.bounds) * 0.75) {
-        NSLog(@"[ZolaCN][Voice] attach menu tile container not identified; entry skipped");
-        return;
-    }
+    if (!referenceTile || !grid) return;
+    if (objc_getAssociatedObject(grid, ZVAttachEntryMarker)) return;
 
-    CGFloat width = CGRectGetWidth(referenceTile.bounds);
-    CGFloat height = CGRectGetHeight(referenceTile.bounds);
-    CGFloat x = CGRectGetMaxX(referenceTile.frame);
+    CGFloat gridWidth = CGRectGetWidth(grid.bounds);
+    CGFloat hostWidth = CGRectGetWidth(attachView.bounds);
+    // A narrow row/container is not the full attachment grid; walk up to the first full-width parent.
+    while (grid.superview && gridWidth < hostWidth * 0.72) {
+        grid = grid.superview;
+        gridWidth = CGRectGetWidth(grid.bounds);
+    }
+    if (gridWidth < hostWidth * 0.72) return;
+
+    // Recompute the reference tile's frame in the selected grid coordinate space.
+    CGRect referenceFrame = [referenceTile.superview convertRect:referenceTile.frame toView:grid];
+    CGFloat width = CGRectGetWidth(referenceFrame);
+    CGFloat height = CGRectGetHeight(referenceFrame);
+    if (width <= 0 || height <= 0) return;
+
+    CGFloat x = CGRectGetMaxX(referenceFrame);
     CGFloat gap = 0.0;
     for (UIView *sibling in grid.subviews) {
-        if (sibling == referenceTile || CGRectGetMinY(sibling.frame) != CGRectGetMinY(referenceTile.frame)) continue;
-        CGFloat distance = CGRectGetMinX(sibling.frame) - CGRectGetMaxX(referenceTile.frame);
+        if (sibling == referenceTile) continue;
+        CGRect siblingFrame = [sibling.superview convertRect:sibling.frame toView:grid];
+        if (fabs(CGRectGetMinY(siblingFrame) - CGRectGetMinY(referenceFrame)) > 2.0) continue;
+        CGFloat distance = CGRectGetMinX(siblingFrame) - CGRectGetMaxX(referenceFrame);
         if (distance > 1.0 && distance < width * 0.5) { gap = distance; break; }
     }
-    CGRect frame = CGRectMake(x + gap, CGRectGetMinY(referenceTile.frame), width, height);
+    CGRect frame = CGRectMake(x + gap, CGRectGetMinY(referenceFrame), width, height);
     if (CGRectGetMaxX(frame) > CGRectGetWidth(grid.bounds) + 2.0) {
-        NSLog(@"[ZolaCN][Voice] attach menu has no free last-column tile");
+        NSLog(@"[ZolaCN][Voice] no free attachment-grid cell to the right of Text");
         return;
     }
 
@@ -260,15 +292,58 @@ static void ZVInjectVoicePackEntry(id controller) {
 
     [grid addSubview:tile];
     [grid bringSubviewToFront:tile];
-    objc_setAssociatedObject(attachView, ZVAttachEntryMarker, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    NSLog(@"[ZolaCN][Voice] voice pack entry injected into ZAAttachMediaView frame=%@", NSStringFromCGRect(frame));
+    objc_setAssociatedObject(grid, ZVAttachEntryMarker, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSLog(@"[ZolaCN][Voice] voice pack entry injected controller=%@ grid=%@ frame=%@",
+          NSStringFromClass([controller class]), NSStringFromClass(grid.class), NSStringFromCGRect(frame));
 }
 
 static void ZVCreateAttachMediaView(id self, SEL cmd) {
-    ((void (*)(id, SEL))ZVOriginalCreateAttachMediaView)(self, cmd);
+    if (ZVOriginalCreateAttachMediaView) {
+        ((void (*)(id, SEL))ZVOriginalCreateAttachMediaView)(self, cmd);
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
         ZVInjectVoicePackEntry(self);
     });
+}
+
+static void ZVChatViewDidLayoutSubviews(id self, SEL cmd) {
+    if (ZVOriginalChatViewDidLayoutSubviews) {
+        ((void (*)(id, SEL))ZVOriginalChatViewDidLayoutSubviews)(self, cmd);
+    }
+    ZVInjectVoicePackEntry(self);
+}
+
+static void ZVHookChatLayout(Class chatController) {
+    if (!chatController) return;
+    SEL selector = @selector(viewDidLayoutSubviews);
+    unsigned int count = 0;
+    Method *methods = class_copyMethodList(chatController, &count);
+    Method direct = NULL;
+    for (unsigned int i = 0; i < count; i++) {
+        if (method_getName(methods[i]) == selector) { direct = methods[i]; break; }
+    }
+    free(methods);
+
+    if (direct) {
+        ZVOriginalChatViewDidLayoutSubviews =
+            method_setImplementation(direct, (IMP)ZVChatViewDidLayoutSubviews);
+        NSLog(@"[ZolaCN][Voice] hooked direct %@ viewDidLayoutSubviews", NSStringFromClass(chatController));
+        return;
+    }
+
+    Method inherited = class_getInstanceMethod(chatController, selector);
+    if (!inherited) {
+        NSLog(@"[ZolaCN][Voice] viewDidLayoutSubviews unavailable for %@", NSStringFromClass(chatController));
+        return;
+    }
+    const char *types = method_getTypeEncoding(inherited);
+    ZVOriginalChatViewDidLayoutSubviews = method_getImplementation(inherited);
+    if (class_addMethod(chatController, selector, (IMP)ZVChatViewDidLayoutSubviews, types)) {
+        NSLog(@"[ZolaCN][Voice] added chat-scoped viewDidLayoutSubviews override for %@", NSStringFromClass(chatController));
+    } else {
+        ZVOriginalChatViewDidLayoutSubviews = NULL;
+        NSLog(@"[ZolaCN][Voice] failed to add chat layout hook for %@", NSStringFromClass(chatController));
+    }
 }
 
 
@@ -424,6 +499,7 @@ void ZVInstall(void) {
             ZVHookDirectMethod(chatController,
                               sel_registerName("createAttachMediaView"),
                               (IMP)ZVCreateAttachMediaView, &ZVOriginalCreateAttachMediaView);
+            ZVHookChatLayout(chatController);
         }
     });
 }
