@@ -5,7 +5,7 @@ ARCHS = arm64 arm64e
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = ZolaCN
-ZolaCN_FILES = TweakRaw.xm TranslationsData.m ZolaTheme.m ZolaAntiRecall.m ZolaVoice.m ZolaCompatibility.m
+ZolaCN_FILES = TweakRaw.xm TranslationsData.m ZolaTheme.m ZolaAntiRecall.m ZolaVoice.m ZolaVoiceTrace.m ZolaCompatibility.m
 ZolaCN_CFLAGS = -fobjc-arc
 ZolaCN_FRAMEWORKS = Foundation UIKit AVFoundation UniformTypeIdentifiers
 ZolaCN_LDFLAGS = -install_name @rpath/ZolaCN.dylib
