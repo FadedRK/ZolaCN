@@ -274,7 +274,6 @@ static void ZVCreateAttachMediaView(id self, SEL cmd) {
 static const void *ZVCustomDurationAssociationKey = &ZVCustomDurationAssociationKey;
 static IMP ZVOriginalAudioItemDuration;
 static IMP ZVOriginalAddSendingVoice;
-static IMP ZVOriginalCreateAttachMediaView;
 static BOOL ZVRuntimeHooksInstalled;
 
 static NSString *ZVFormatDuration(NSTimeInterval duration) {
