@@ -122,7 +122,6 @@ static double ZVTHookGetDuration(id self, SEL cmd) {
 static void ZVTInstallEventHooks(void) {
     Class vm = NSClassFromString(@"CommFeatureBusiness.VoiceBoardViewModel");
     Class sender = NSClassFromString(@"_TtC19CommFeatureBusiness11VoiceSender");
-    Class uploader = NSClassFromString(@"_TtC19CommFeatureBusiness23VoiceContinuousUploader");
     Class chat = NSClassFromString(@"BaseChatTVC");
     Class entity = NSClassFromString(@"ChatEntity");
 
