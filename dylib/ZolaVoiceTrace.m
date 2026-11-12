@@ -2,7 +2,11 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-static NSString *ZVTLogPath(void) {\n    NSURL *url = [[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask] firstObject];\n    return [[url URLByAppendingPathComponent:@"ZolaVoiceTrace.log"] path];\n}\nstatic Class ZolaVoiceTraceClass(void);
+static NSString *ZVTLogPath(void) {
+    NSURL *url = [[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask] firstObject];
+    return [[url URLByAppendingPathComponent:@"ZolaVoiceTrace.log"] path];
+}
+static Class ZolaVoiceTraceClass(void);
 static NSMutableSet<NSString *> *ZVTSeenClasses;
 static BOOL ZVTInstalled;
 
@@ -13,10 +17,11 @@ static void ZVTLog(NSString *format, ...) {
     NSString *entry = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], line];
     NSLog(@"[ZolaCN][VoiceTrace] %@", line);
     @synchronized (ZolaVoiceTraceClass()) {
-        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:ZVTLogPath()];
+        NSString *path = ZVTLogPath();
+        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
         if (!fh) {
-            [[NSFileManager defaultManager] createFileAtPath:ZVTLogPath() contents:nil attributes:nil];
-            fh = [NSFileHandle fileHandleForWritingAtPath:ZVTLogPath];
+            [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
+            fh = [NSFileHandle fileHandleForWritingAtPath:path];
         }
         [fh seekToEndOfFile];
         [fh writeData:[entry dataUsingEncoding:NSUTF8StringEncoding]];
