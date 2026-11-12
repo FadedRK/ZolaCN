@@ -4,6 +4,7 @@
 #import "ZolaCompatibility.h"
 
 extern void ZTHOpenSettings(UIViewController *presentingViewController);
+extern void ZVOpenSettings(UIViewController *presentingViewController);
 
 static void (*ZAROriginalUpdate)(id, SEL, id) = NULL;
 static BOOL ZARInstalled = NO;
@@ -413,11 +414,22 @@ static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
                            @"Chủ đề & giao diện",
                            @"Themes & Interface");
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    } else {
+    } else if (indexPath.row == 3) {
         cell.textLabel.text =
             ZARSettingText(@"界面语言",
                            @"Ngôn ngữ giao diện",
                            @"Interface Language");
+        cell.detailTextLabel.text = ZARSettingText(@"中文", @"Tiếng Việt", @"English");
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    } else {
+        cell.textLabel.text =
+            ZARSettingText(@"语音增强",
+                           @"Tăng cường giọng nói",
+                           @"Voice Enhancements");
+        cell.detailTextLabel.text = ZARSettingText(@"语音包与时长", @"Gói thoại & thời lượng", @"Voice packs & duration");
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    }
+
         cell.detailTextLabel.text = ZARSettingText(
             @"中文",
             @"Tiếng Việt",
@@ -522,6 +534,23 @@ static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
         if (root) ZTHOpenSettings(root);
     } else if (indexPath.row == 3) {
         [self chooseLanguage];
+    } else if (indexPath.row == 4) {
+        UIWindow *window = nil;
+        for (UIWindowScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (scene.activationState == UISceneActivationStateForegroundActive) {
+                for (UIWindow *candidate in scene.windows) {
+                    if (candidate.isKeyWindow) { window = candidate; break; }
+                }
+            }
+            if (window) break;
+        }
+        UIViewController *root = window.rootViewController;
+        while (root.presentedViewController) root = root.presentedViewController;
+        if ([root isKindOfClass:[UINavigationController class]]) {
+            UIViewController *visible = [(UINavigationController *)root visibleViewController];
+            if (visible) root = visible;
+        }
+        if (root) ZVOpenSettings(root);
     }
 }
 
