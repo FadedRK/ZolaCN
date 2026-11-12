@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <dispatch/dispatch.h>
+#import <QuartzCore/QuartzCore.h>
 
 static dispatch_queue_t ZATLogQueue;
 static IMP ZATOriginalLayout;
@@ -60,7 +61,7 @@ static BOOL ZATIsKnownTileLabel(NSString *raw) {
 }
 
 static void ZATScanForMarkers(UIView *view, NSMutableSet<NSString *> *markers, NSUInteger *visited) {
-    if (!view || *visited >= 600) return;
+    if (!view || *visited >= 600 || view.hidden || view.alpha < 0.05) return;
     (*visited)++;
     if ([view isKindOfClass:UILabel.class]) {
         NSString *text = ZATClean(((UILabel *)view).text);
