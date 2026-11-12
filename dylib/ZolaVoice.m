@@ -141,6 +141,7 @@ static BOOL ZVExtractZip(NSURL *zipURL, NSString *folder, NSUInteger *importedCo
 }
 
 
+void ZVOpenSettings(UIViewController *presentingViewController);
 static const void *ZVAttachEntryMarker = &ZVAttachEntryMarker;
 static IMP ZVOriginalCreateAttachMediaView;
 
@@ -164,7 +165,7 @@ static UILabel *ZVFindVoicePackReferenceLabel(UIView *root) {
         UIView *view = stack.lastObject;
         [stack removeLastObject];
         if ([view isKindOfClass:UILabel.class]) {
-            NSString *value = [(UILabel *)view.text lowercaseString];
+            NSString *value = [((UILabel *)view).text.lowercaseString copy] ?: @"";
             if ([names containsObject:value]) return (UILabel *)view;
         }
         for (UIView *child in view.subviews) [stack addObject:child];
