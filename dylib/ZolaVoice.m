@@ -147,6 +147,7 @@ static const void *ZVAttachEntryMarker = &ZVAttachEntryMarker;
 static const void *ZVAttachAttemptMarker = &ZVAttachAttemptMarker;
 static IMP ZVOriginalCreateAttachMediaView;
 static IMP ZVOriginalChatViewDidLayoutSubviews;
+static IMP ZVOriginalGridLayoutSubviews;
 
 @interface ZVVoicePackEntryTarget : NSObject
 @property (nonatomic, weak) UIViewController *presenter;
@@ -194,19 +195,27 @@ static BOOL ZVFindAttachmentTextCell(UIView *root, UICollectionView **collection
     return NO;
 }
 
-static void ZVInjectVoicePackEntry(id controller) {
-    if (![controller isKindOfClass:UIViewController.class]) return;
-    UIViewController *chatViewController = (UIViewController *)controller;
+static UIViewController *ZVContainingViewController(UIView *view) {
+    UIResponder *responder = view;
+    while (responder) {
+        if ([responder isKindOfClass:UIViewController.class]) return (UIViewController *)responder;
+        responder = responder.nextResponder;
+    }
+    return nil;
+}
 
-    NSNumber *lastAttempt = objc_getAssociatedObject(controller, ZVAttachAttemptMarker);
+static void ZVInjectVoicePackEntryFromRoot(UIView *root, UIViewController *presenter) {
+    if (!root || !presenter) return;
+
+    NSNumber *lastAttempt = objc_getAssociatedObject(root, ZVAttachAttemptMarker);
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     if (lastAttempt && now - lastAttempt.doubleValue < 0.35) return;
-    objc_setAssociatedObject(controller, ZVAttachAttemptMarker, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(root, ZVAttachAttemptMarker, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     UICollectionView *collectionView = nil;
     UIView *textCell = nil;
     UILabel *textLabel = nil;
-    if (!ZVFindAttachmentTextCell(chatViewController.view, &collectionView, &textCell, &textLabel)) return;
+    if (!ZVFindAttachmentTextCell(root, &collectionView, &textCell, &textLabel)) return;
 
     // Trace v2 confirmed: InputFunctionCollectionView is the four-column attachment grid.
     // "文本" is column 3, row 3; its right-hand column 4 cell is intentionally empty.
@@ -260,7 +269,7 @@ static void ZVInjectVoicePackEntry(id controller) {
     [tile addSubview:title];
 
     ZVVoicePackEntryTarget *target = [ZVVoicePackEntryTarget new];
-    target.presenter = chatViewController;
+    target.presenter = presenter;
     objc_setAssociatedObject(tile, @selector(openVoicePacks), target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -269,15 +278,35 @@ static void ZVInjectVoicePackEntry(id controller) {
     [button addTarget:target action:@selector(openVoicePacks) forControlEvents:UIControlEventTouchUpInside];
     [tile addSubview:button];
 
-    // Add to KBContentView rather than the UICollectionView so scroll contentOffset
-    // cannot shift the injected tile away from the measured empty cell.
     [host addSubview:tile];
     [host bringSubviewToFront:tile];
     objc_setAssociatedObject(host, ZVAttachEntryMarker, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    NSLog(@"[ZolaCN][Voice] voice pack entry injected into fourth column: collection=%@ host=%@ textFrame=%@ entryFrame=%@",
-          NSStringFromClass(collectionView.class), NSStringFromClass(host.class),
-          NSStringFromCGRect(textFrame), NSStringFromCGRect(frame));
+    NSLog(@"[ZolaCN][Voice] voice pack entry injected: presenter=%@ collection=%@ host=%@ textFrame=%@ entryFrame=%@",
+          NSStringFromClass(presenter.class), NSStringFromClass(collectionView.class),
+          NSStringFromClass(host.class), NSStringFromCGRect(textFrame), NSStringFromCGRect(frame));
+}
+
+static void ZVInjectVoicePackEntry(id controller) {
+    if (![controller isKindOfClass:UIViewController.class]) return;
+    UIViewController *chatViewController = (UIViewController *)controller;
+    ZVInjectVoicePackEntryFromRoot(chatViewController.view, chatViewController);
+}
+
+static const void *ZVGridLayoutPendingMarker = &ZVGridLayoutPendingMarker;
+
+static void ZVAttachmentGridLayoutSubviews(id self, SEL cmd) {
+    if (ZVOriginalGridLayoutSubviews) {
+        ((void (*)(id, SEL))ZVOriginalGridLayoutSubviews)(self, cmd);
+    }
+    if (objc_getAssociatedObject(self, ZVGridLayoutPendingMarker)) return;
+    objc_setAssociatedObject(self, ZVGridLayoutPendingMarker, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        objc_setAssociatedObject(self, ZVGridLayoutPendingMarker, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        UIView *grid = (UIView *)self;
+        UIViewController *presenter = ZVContainingViewController(grid);
+        if (presenter) ZVInjectVoicePackEntryFromRoot(grid, presenter);
+    });
 }
 
 static void ZVCreateAttachMediaView(id self, SEL cmd) {
@@ -298,6 +327,46 @@ static void ZVChatViewDidLayoutSubviews(id self, SEL cmd) {
 
 
 static BOOL ZVChatLayoutHookInstalled;
+static BOOL ZVGridLayoutHookInstalled;
+
+static BOOL ZVHookAttachmentGridLayout(Class gridClass) {
+    if (!gridClass) return NO;
+    if (ZVGridLayoutHookInstalled) return YES;
+
+    SEL selector = @selector(layoutSubviews);
+    unsigned int count = 0;
+    Method *methods = class_copyMethodList(gridClass, &count);
+    Method direct = NULL;
+    for (unsigned int i = 0; i < count; i++) {
+        if (method_getName(methods[i]) == selector) { direct = methods[i]; break; }
+    }
+    free(methods);
+
+    if (direct) {
+        ZVOriginalGridLayoutSubviews = method_setImplementation(direct, (IMP)ZVAttachmentGridLayoutSubviews);
+        ZVGridLayoutHookInstalled = (ZVOriginalGridLayoutSubviews != NULL);
+        NSLog(@"[ZolaCN][Voice] hooked direct %@ layoutSubviews installed=%d",
+              NSStringFromClass(gridClass), ZVGridLayoutHookInstalled);
+        return ZVGridLayoutHookInstalled;
+    }
+
+    Method inherited = class_getInstanceMethod(gridClass, selector);
+    if (!inherited) {
+        NSLog(@"[ZolaCN][Voice] layoutSubviews unavailable for %@", NSStringFromClass(gridClass));
+        return NO;
+    }
+    ZVOriginalGridLayoutSubviews = method_getImplementation(inherited);
+    if (class_addMethod(gridClass, selector, (IMP)ZVAttachmentGridLayoutSubviews,
+                        method_getTypeEncoding(inherited))) {
+        ZVGridLayoutHookInstalled = YES;
+        NSLog(@"[ZolaCN][Voice] added grid-scoped layoutSubviews override for %@",
+              NSStringFromClass(gridClass));
+        return YES;
+    }
+    ZVOriginalGridLayoutSubviews = NULL;
+    NSLog(@"[ZolaCN][Voice] failed to add grid layout hook for %@", NSStringFromClass(gridClass));
+    return NO;
+}
 
 static BOOL ZVHookChatLayout(Class chatController) {
     if (!chatController) return NO;
@@ -484,6 +553,7 @@ static BOOL ZVInstallRuntimeHooksOnce(void) {
     Class baseChat = NSClassFromString(@"BaseChatTVC");
     // The trace identified this as the concrete controller used by the actual chat screen.
     Class concreteChat = NSClassFromString(@"ChatTableViewController");
+    Class attachmentGrid = NSClassFromString(@"InputFunctionCollectionView");
     // Trace v2 identifies ChatTableViewController as the actual visible screen class.
     // Wait for it explicitly so a subclass override cannot bypass a BaseChatTVC hook.
     Class layoutTarget = concreteChat;
@@ -510,13 +580,16 @@ static BOOL ZVInstallRuntimeHooksOnce(void) {
     if (layoutTarget && !ZVChatLayoutHookInstalled) {
         ZVHookChatLayout(layoutTarget);
     }
+    if (attachmentGrid && !ZVGridLayoutHookInstalled) {
+        ZVHookAttachmentGridLayout(attachmentGrid);
+    }
 
-    BOOL entryReady = ZVChatLayoutHookInstalled;
+    BOOL entryReady = ZVChatLayoutHookInstalled || ZVGridLayoutHookInstalled;
     BOOL voiceReady = ZVAddVoiceHookInstalled;
     BOOL durationReady = ZVDurationHookInstalled;
-    NSString *state = [NSString stringWithFormat:@"Base=%d Chat=%d layout=%d addVoice=%d duration=%d create=%d",
-        baseChat != Nil, concreteChat != Nil, ZVChatLayoutHookInstalled,
-        ZVAddVoiceHookInstalled, ZVDurationHookInstalled, ZVCreateAttachHookInstalled];
+    NSString *state = [NSString stringWithFormat:@"Base=%d Chat=%d Grid=%d chatLayout=%d gridLayout=%d addVoice=%d duration=%d create=%d",
+        baseChat != Nil, concreteChat != Nil, attachmentGrid != Nil, ZVChatLayoutHookInstalled,
+        ZVGridLayoutHookInstalled, ZVAddVoiceHookInstalled, ZVDurationHookInstalled, ZVCreateAttachHookInstalled];
     if (![state isEqualToString:ZVLastRuntimeHookState]) {
         ZVLastRuntimeHookState = state;
         NSLog(@"[ZolaCN][Voice] runtime hook state changed: %@", state);
