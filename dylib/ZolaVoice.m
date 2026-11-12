@@ -140,9 +140,140 @@ static BOOL ZVExtractZip(NSURL *zipURL, NSString *folder, NSUInteger *importedCo
     return YES;
 }
 
+
+static const void *ZVAttachEntryMarker = &ZVAttachEntryMarker;
+static IMP ZVOriginalCreateAttachMediaView;
+
+@interface ZVVoicePackEntryTarget : NSObject
+@property (nonatomic, weak) UIViewController *presenter;
+- (void)openVoicePacks;
+@end
+
+@implementation ZVVoicePackEntryTarget
+- (void)openVoicePacks {
+    UIViewController *presenter = self.presenter;
+    if (!presenter || presenter.presentedViewController) return;
+    ZVOpenSettings(presenter);
+}
+@end
+
+static UILabel *ZVFindVoicePackReferenceLabel(UIView *root) {
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:root];
+    NSSet *names = [NSSet setWithArray:@[@"文本", @"text", @"văn bản", @"van ban"]];
+    while (stack.count) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        if ([view isKindOfClass:UILabel.class]) {
+            NSString *value = [(UILabel *)view.text lowercaseString];
+            if ([names containsObject:value]) return (UILabel *)view;
+        }
+        for (UIView *child in view.subviews) [stack addObject:child];
+    }
+    return nil;
+}
+
+static UIView *ZVFindTileForLabel(UILabel *label, CGFloat hostWidth) {
+    UIView *candidate = nil;
+    UIView *view = label;
+    while (view.superview) {
+        view = view.superview;
+        CGFloat width = CGRectGetWidth(view.bounds);
+        CGFloat height = CGRectGetHeight(view.bounds);
+        if (width >= hostWidth * 0.17 && width <= hostWidth * 0.34 &&
+            height >= 65.0 && height <= 190.0) {
+            candidate = view;
+            break;
+        }
+    }
+    return candidate;
+}
+
+static void ZVInjectVoicePackEntry(id controller) {
+    Ivar ivar = class_getInstanceVariable(object_getClass(controller), "_attachMediaView");
+    UIView *attachView = ivar ? object_getIvar(controller, ivar) : nil;
+    if (![attachView isKindOfClass:UIView.class] || attachView.hidden ||
+        objc_getAssociatedObject(attachView, ZVAttachEntryMarker)) return;
+
+    UILabel *referenceLabel = ZVFindVoicePackReferenceLabel(attachView);
+    if (!referenceLabel) {
+        NSLog(@"[ZolaCN][Voice] attach menu reference label not found; entry skipped");
+        return;
+    }
+    UIView *referenceTile = ZVFindTileForLabel(referenceLabel, CGRectGetWidth(attachView.bounds));
+    UIView *grid = referenceTile.superview;
+    if (!referenceTile || !grid || CGRectGetWidth(grid.bounds) < CGRectGetWidth(attachView.bounds) * 0.75) {
+        NSLog(@"[ZolaCN][Voice] attach menu tile container not identified; entry skipped");
+        return;
+    }
+
+    CGFloat width = CGRectGetWidth(referenceTile.bounds);
+    CGFloat height = CGRectGetHeight(referenceTile.bounds);
+    CGFloat x = CGRectGetMaxX(referenceTile.frame);
+    CGFloat gap = 0.0;
+    for (UIView *sibling in grid.subviews) {
+        if (sibling == referenceTile || CGRectGetMinY(sibling.frame) != CGRectGetMinY(referenceTile.frame)) continue;
+        CGFloat distance = CGRectGetMinX(sibling.frame) - CGRectGetMaxX(referenceTile.frame);
+        if (distance > 1.0 && distance < width * 0.5) { gap = distance; break; }
+    }
+    CGRect frame = CGRectMake(x + gap, CGRectGetMinY(referenceTile.frame), width, height);
+    if (CGRectGetMaxX(frame) > CGRectGetWidth(grid.bounds) + 2.0) {
+        NSLog(@"[ZolaCN][Voice] attach menu has no free last-column tile");
+        return;
+    }
+
+    UIView *tile = [[UIView alloc] initWithFrame:frame];
+    tile.backgroundColor = UIColor.clearColor;
+    tile.userInteractionEnabled = YES;
+
+    CGFloat iconSize = MIN(68.0, height * 0.56);
+    UIView *circle = [[UIView alloc] initWithFrame:CGRectMake((width-iconSize)/2.0, 5.0, iconSize, iconSize)];
+    circle.backgroundColor = UIColor.systemBlueColor;
+    circle.layer.cornerRadius = iconSize / 2.0;
+    circle.userInteractionEnabled = NO;
+
+    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"waveform"]];
+    icon.tintColor = UIColor.whiteColor;
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    icon.frame = CGRectMake(iconSize*0.24, iconSize*0.24, iconSize*0.52, iconSize*0.52);
+    [circle addSubview:icon];
+    [tile addSubview:circle];
+
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(0, CGRectGetMaxY(circle.frame)+7.0, width, 25.0)];
+    title.text = @"语音包";
+    title.textAlignment = NSTextAlignmentCenter;
+    title.font = referenceLabel.font ?: [UIFont systemFontOfSize:14.0];
+    title.textColor = referenceLabel.textColor ?: UIColor.labelColor;
+    title.userInteractionEnabled = NO;
+    [tile addSubview:title];
+
+    ZVVoicePackEntryTarget *target = [ZVVoicePackEntryTarget new];
+    target.presenter = (UIViewController *)controller;
+    objc_setAssociatedObject(tile, @selector(openVoicePacks), target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+    button.frame = tile.bounds;
+    button.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [button addTarget:target action:@selector(openVoicePacks) forControlEvents:UIControlEventTouchUpInside];
+    [tile addSubview:button];
+
+    [grid addSubview:tile];
+    [grid bringSubviewToFront:tile];
+    objc_setAssociatedObject(attachView, ZVAttachEntryMarker, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSLog(@"[ZolaCN][Voice] voice pack entry injected into ZAAttachMediaView frame=%@", NSStringFromCGRect(frame));
+}
+
+static void ZVCreateAttachMediaView(id self, SEL cmd) {
+    ((void (*)(id, SEL))ZVOriginalCreateAttachMediaView)(self, cmd);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ZVInjectVoicePackEntry(self);
+    });
+}
+
+
 static const void *ZVCustomDurationAssociationKey = &ZVCustomDurationAssociationKey;
 static IMP ZVOriginalAudioItemDuration;
 static IMP ZVOriginalAddSendingVoice;
+static IMP ZVOriginalCreateAttachMediaView;
 static BOOL ZVRuntimeHooksInstalled;
 
 static NSString *ZVFormatDuration(NSTimeInterval duration) {
@@ -205,6 +336,9 @@ void ZVInstall(void) {
             ZVHookDirectMethod(chatController,
                               sel_registerName("addSendingVoiceWithAudioItem:fileLink:uploading:source:"),
                               (IMP)ZVAddSendingVoice, &ZVOriginalAddSendingVoice);
+            ZVHookDirectMethod(chatController,
+                              sel_registerName("createAttachMediaView"),
+                              (IMP)ZVCreateAttachMediaView, &ZVOriginalCreateAttachMediaView);
         }
     });
 }
@@ -355,8 +489,9 @@ void ZVInstall(void) {
 }
 
 - (void)importAudio {
+    UTType *zipType = [UTType typeWithFilenameExtension:@"zip"] ?: UTType.data;
     UIDocumentPickerViewController *picker =
-        [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.audio", @"public.zip-archive"] inMode:UIDocumentPickerModeImport];
+        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeAudio, zipType] asCopy:YES];
     picker.delegate = self;
     picker.allowsMultipleSelection = YES;
     [self presentViewController:picker animated:YES completion:nil];
