@@ -12,6 +12,7 @@ extern "C" {
 extern void ZARInstall(void);
 extern void ZARInstallSettings(void);
 extern void ZVTInstall(void);
+extern void ZVInstall(void);
 #ifdef __cplusplus
 }
 #endif
@@ -229,6 +230,7 @@ static void ZLCNInit(void) {
         ZLCNInstallUIKit();
         ZARInstall();
         ZARInstallSettings();
+        ZVInstall();
         ZVTInstall();
 
         NSLog(@"[ZolaCN] initialization complete (%lu translations), language=%@",
