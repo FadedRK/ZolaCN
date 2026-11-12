@@ -296,6 +296,7 @@ static void ZVChatViewDidLayoutSubviews(id self, SEL cmd) {
     ZVInjectVoicePackEntry(self);
 }
 
+
 static BOOL ZVHookChatLayout(Class chatController) {
     if (!chatController) return NO;
     if (ZVChatLayoutHookInstalled) return YES;
