@@ -194,6 +194,7 @@ static UIView *ZVFindTileForLabel(UILabel *label, CGFloat hostWidth) {
 
 static void ZVInjectVoicePackEntry(id controller) {
     if (![controller isKindOfClass:UIViewController.class]) return;
+    UIViewController *chatViewController = (UIViewController *)controller;
 
     // Rate-limit layout retries: the attach panel is created lazily after the chat controller.
     NSNumber *lastAttempt = objc_getAssociatedObject(controller, ZVAttachAttemptMarker);
@@ -210,11 +211,11 @@ static void ZVInjectVoicePackEntry(id controller) {
 
     // Some Zalo builds do not expose the Swift/private attach view ivar.
     // In that case, search the current chat screen's view tree instead.
-    if (![attachView isKindOfClass:UIView.class] || attachView.hidden) attachView = controller.view;
+    if (![attachView isKindOfClass:UIView.class] || attachView.hidden) attachView = chatViewController.view;
     if (![attachView isKindOfClass:UIView.class] || attachView.hidden) return;
 
     UILabel *referenceLabel = ZVFindVoicePackReferenceLabel(attachView);
-    if (!referenceLabel && attachView != controller.view) {
+    if (!referenceLabel && attachView != chatViewController.view) {
         attachView = controller.view;
         referenceLabel = ZVFindVoicePackReferenceLabel(attachView);
     }
