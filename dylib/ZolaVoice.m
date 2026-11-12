@@ -216,7 +216,7 @@ static void ZVInjectVoicePackEntry(id controller) {
 
     UILabel *referenceLabel = ZVFindVoicePackReferenceLabel(attachView);
     if (!referenceLabel && attachView != chatViewController.view) {
-        attachView = controller.view;
+        attachView = chatViewController.view;
         referenceLabel = ZVFindVoicePackReferenceLabel(attachView);
     }
     if (!referenceLabel) return;
