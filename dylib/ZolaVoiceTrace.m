@@ -1,103 +1,147 @@
 #import <Foundation/Foundation.h>
-#import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <dispatch/dispatch.h>
+
+/*
+ * ZolaCN Voice Trace v2
+ * Lightweight, read-only runtime metadata probe.
+ *
+ * Deliberately does NOT:
+ * - enumerate all loaded classes repeatedly
+ * - hook UIControl or any UIKit event
+ * - swizzle Zalo methods
+ * - inspect/log message content, audio bytes, URLs, or user data
+ *
+ * It records metadata for a small allow-list of voice-related classes only.
+ */
+
+static NSString * const ZVTLogFileName = @"ZolaVoiceTrace-v2.log";
+static BOOL ZVTDidInstall = NO;
 
 static NSString *ZVTLogPath(void) {
-    NSURL *url = [[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask] firstObject];
-    return [[url URLByAppendingPathComponent:@"ZolaVoiceTrace.log"] path];
+    NSURL *cacheURL = [[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory
+                                                              inDomains:NSUserDomainMask] firstObject];
+    return [[cacheURL URLByAppendingPathComponent:ZVTLogFileName] path];
 }
-static Class ZolaVoiceTraceClass(void);
-static NSMutableSet<NSString *> *ZVTSeenClasses;
-static BOOL ZVTInstalled;
 
-static void ZVTLog(NSString *format, ...) {
-    va_list args; va_start(args, format);
-    NSString *line = [[NSString alloc] initWithFormat:format arguments:args];
-    va_end(args);
+static void ZVTAppendLine(NSString *line) {
     NSString *entry = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], line];
-    NSLog(@"[ZolaCN][VoiceTrace] %@", line);
-    @synchronized (ZolaVoiceTraceClass()) {
-        NSString *path = ZVTLogPath();
-        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
-        if (!fh) {
-            [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
-            fh = [NSFileHandle fileHandleForWritingAtPath:path];
+    NSData *data = [entry dataUsingEncoding:NSUTF8StringEncoding];
+    NSString *path = ZVTLogPath();
+
+    @synchronized ([NSObject class]) {
+        NSFileManager *fm = [NSFileManager defaultManager];
+        if (![fm fileExistsAtPath:path]) {
+            [fm createFileAtPath:path contents:nil attributes:nil];
         }
-        [fh seekToEndOfFile];
-        [fh writeData:[entry dataUsingEncoding:NSUTF8StringEncoding]];
-        [fh closeFile];
+        NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+        if (!handle) return;
+        @try {
+            [handle seekToEndOfFile];
+            [handle writeData:data];
+        } @catch (__unused NSException *exception) {
+        } @finally {
+            [handle closeFile];
+        }
     }
 }
 
-static Class ZolaVoiceTraceClass(void) { return NSClassFromString(@"NSObject") ?: NSObject.class; }
-
-static BOOL ZVTRelevant(NSString *s) {
-    NSString *v = s.lowercaseString;
-    for (NSString *word in @[@"voice", @"audio", @"record", @"speech", @"media", @"upload", @"send"]) {
-        if ([v containsString:word]) return YES;
-    }
-    return NO;
+static NSArray<NSString *> *ZVTTargetClassNames(void) {
+    return @[
+        @"CommFeatureBusiness.VoiceBoardView",
+        @"CommFeatureBusiness.VoiceBoardViewModel",
+        @"CommFeatureBusiness.AudioRecordingResult",
+        @"CommFeatureBusiness.VoiceUploadSession",
+        @"CommFeatureBusiness.PersistentAudioRecorder",
+        @"CommFeatureBusiness.AudioRecorder",
+        @"CommFeatureBusiness.UploadedVoiceLink",
+        @"CommFeatureBusiness.AudioPlaybackView",
+        @"CommFeatureBusiness.AudioPlaybackController",
+        @"BaseChatTVC",
+        @"ZaloTableViewController",
+        @"ChatEntity",
+        @"VoiceBoardButton"
+    ];
 }
 
-static void ZVTScanRuntime(void) {
-    int count = objc_getClassList(NULL, 0);
-    if (count <= 0) return;
-    Class *classes = (__unsafe_unretained Class *)calloc((size_t)count, sizeof(Class));
-    count = objc_getClassList(classes, count);
-    for (int i = 0; i < count; i++) {
-        Class cls = classes[i];
-        NSString *className = NSStringFromClass(cls);
-        BOOL classRelevant = ZVTRelevant(className);
-        unsigned int methodCount = 0;
-        Method *methods = class_copyMethodList(cls, &methodCount);
-        NSMutableArray *matches = [NSMutableArray array];
-        for (unsigned int j = 0; j < methodCount; j++) {
-            SEL sel = method_getName(methods[j]);
-            NSString *name = NSStringFromSelector(sel);
-            if (ZVTRelevant(name)) {
-                [matches addObject:[NSString stringWithFormat:@"%@ [%s]", name, method_getTypeEncoding(methods[j]) ?: "?"]];
-            }
-        }
-        free(methods);
-        if ((classRelevant || matches.count) && ![ZVTSeenClasses containsObject:className]) {
-            [ZVTSeenClasses addObject:className];
-            ZVTLog(@"DISCOVER class=%@ methods=%@", className, matches.count ? [matches componentsJoinedByString:@" ; "] : @"<class-name match; no direct methods>");
-        }
+static void ZVTDescribeClass(Class cls, NSString *requestedName) {
+    if (!cls) {
+        ZVTAppendLine([NSString stringWithFormat:@"CLASS_NOT_LOADED name=%@", requestedName]);
+        return;
     }
-    free(classes);
+
+    NSString *actualName = NSStringFromClass(cls);
+    ZVTAppendLine([NSString stringWithFormat:@"CLASS name=%@ requested=%@ superclass=%@",
+                   actualName, requestedName,
+                   class_getSuperclass(cls) ? NSStringFromClass(class_getSuperclass(cls)) : @"<none>"]);
+
+    unsigned int propertyCount = 0;
+    objc_property_t *properties = class_copyPropertyList(cls, &propertyCount);
+    for (unsigned int i = 0; i < propertyCount; i++) {
+        const char *name = property_getName(properties[i]);
+        const char *attrs = property_getAttributes(properties[i]);
+        ZVTAppendLine([NSString stringWithFormat:@"PROPERTY class=%@ name=%s attrs=%s",
+                       actualName, name ?: "?", attrs ?: "?"]);
+    }
+    free(properties);
+
+    unsigned int ivarCount = 0;
+    Ivar *ivars = class_copyIvarList(cls, &ivarCount);
+    for (unsigned int i = 0; i < ivarCount; i++) {
+        const char *name = ivar_getName(ivars[i]);
+        const char *type = ivar_getTypeEncoding(ivars[i]);
+        ZVTAppendLine([NSString stringWithFormat:@"IVAR class=%@ name=%s type=%s",
+                       actualName, name ?: "?", type ?: "?"]);
+    }
+    free(ivars);
+
+    unsigned int methodCount = 0;
+    Method *methods = class_copyMethodList(cls, &methodCount);
+    for (unsigned int i = 0; i < methodCount; i++) {
+        SEL selector = method_getName(methods[i]);
+        const char *types = method_getTypeEncoding(methods[i]);
+        ZVTAppendLine([NSString stringWithFormat:@"METHOD class=%@ selector=%@ types=%s",
+                       actualName, NSStringFromSelector(selector), types ?: "?"]);
+    }
+    free(methods);
+
+    unsigned int classMethodCount = 0;
+    Method *classMethods = class_copyMethodList(object_getClass(cls), &classMethodCount);
+    for (unsigned int i = 0; i < classMethodCount; i++) {
+        SEL selector = method_getName(classMethods[i]);
+        const char *types = method_getTypeEncoding(classMethods[i]);
+        ZVTAppendLine([NSString stringWithFormat:@"CLASS_METHOD class=%@ selector=%@ types=%s",
+                       actualName, NSStringFromSelector(selector), types ?: "?"]);
+    }
+    free(classMethods);
 }
 
-static void (*ZVTOrigSendAction)(id, SEL, SEL, id, UIEvent *);
-static void ZVTSendAction(id self, SEL cmd, SEL action, id target, UIEvent *event) {
-    NSString *targetClass = target ? NSStringFromClass([target class]) : @"<responder-chain>";
-    NSString *actionName = action ? NSStringFromSelector(action) : @"<nil>";
-    NSString *title = nil;
-    if ([self isKindOfClass:UIControl.class]) {
-        if ([self isKindOfClass:UIButton.class]) title = [(UIButton *)self titleForState:UIControlStateNormal];
+static void ZVTCollectMetadata(void) {
+    ZVTAppendLine([NSString stringWithFormat:@"START version=2 process=%@ bundle=%@",
+                   NSProcessInfo.processInfo.processName,
+                   NSBundle.mainBundle.bundleIdentifier ?: @""]);
+
+    for (NSString *name in ZVTTargetClassNames()) {
+        @autoreleasepool {
+            Class cls = NSClassFromString(name);
+            ZVTDescribeClass(cls, name);
+        }
     }
-    ZVTLog(@"UI_ACTION control=%@ target=%@ action=%@ title=%@ event=%@",
-           NSStringFromClass([self class]), targetClass, actionName, title ?: @"", event ? NSStringFromClass([event class]) : @"<nil>");
-    if (ZVTOrigSendAction) ZVTOrigSendAction(self, cmd, action, target, event);
+
+    ZVTAppendLine(@"END metadata-only; no hooks installed");
 }
 
 void ZVTInstall(void) {
-    if (ZVTInstalled) return;
-    ZVTInstalled = YES;
-    ZVTSeenClasses = [NSMutableSet set];
-    ZVTLog(@"START process=%@ bundle=%@; discovery-only, no Zalo private methods are hooked",
-           NSProcessInfo.processInfo.processName, NSBundle.mainBundle.bundleIdentifier ?: @"");
-    Method m = class_getInstanceMethod(UIControl.class, @selector(sendAction:to:forEvent:));
-    if (m) {
-        ZVTOrigSendAction = (void (*)(id, SEL, SEL, id, UIEvent *))method_getImplementation(m);
-        method_setImplementation(m, (IMP)ZVTSendAction);
-        ZVTLog(@"HOOK UIKit UIControl sendAction:to:forEvent: types=%s", method_getTypeEncoding(m));
-    } else {
-        ZVTLog(@"WARNING UIControl sendAction:to:forEvent: not found");
+    @synchronized ([NSObject class]) {
+        if (ZVTDidInstall) return;
+        ZVTDidInstall = YES;
     }
-    ZVTScanRuntime();
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(__unused NSTimer *timer) {
-            ZVTScanRuntime();
-        }];
+
+    // Run one bounded metadata pass off the main thread after app startup.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        @autoreleasepool {
+            ZVTCollectMetadata();
+        }
     });
 }
