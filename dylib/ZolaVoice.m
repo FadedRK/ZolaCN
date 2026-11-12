@@ -584,7 +584,7 @@ static BOOL ZVInstallRuntimeHooksOnce(void) {
         ZVHookAttachmentGridLayout(attachmentGrid);
     }
 
-    BOOL entryReady = ZVChatLayoutHookInstalled || ZVGridLayoutHookInstalled;
+    BOOL entryReady = ZVGridLayoutHookInstalled;
     BOOL voiceReady = ZVAddVoiceHookInstalled;
     BOOL durationReady = ZVDurationHookInstalled;
     NSString *state = [NSString stringWithFormat:@"Base=%d Chat=%d Grid=%d chatLayout=%d gridLayout=%d addVoice=%d duration=%d create=%d",
@@ -595,8 +595,8 @@ static BOOL ZVInstallRuntimeHooksOnce(void) {
         NSLog(@"[ZolaCN][Voice] runtime hook state changed: %@", state);
     }
 
-    // Entry injection only needs the layout hook; voice sending and duration hooks
-    // are tracked independently and retried until their owning classes are loaded.
+    // Keep retrying until the attachment grid class itself is loaded and hooked;
+    // it may be created only after the user opens the attachment panel.
     if (entryReady && voiceReady && durationReady) {
         ZVRuntimeHooksInstalled = YES;
         return YES;
