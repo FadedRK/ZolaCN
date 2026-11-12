@@ -346,6 +346,7 @@ static BOOL ZVDurationHookInstalled;
 static BOOL ZVAddVoiceHookInstalled;
 static BOOL ZVCreateAttachHookInstalled;
 static BOOL ZVChatLayoutHookInstalled;
+static NSString *ZVLastRuntimeHookState;
 
 
 static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatController, NSString **errorText) {
@@ -481,7 +482,9 @@ static BOOL ZVInstallRuntimeHooksOnce(void) {
     Class baseChat = NSClassFromString(@"BaseChatTVC");
     // The trace identified this as the concrete controller used by the actual chat screen.
     Class concreteChat = NSClassFromString(@"ChatTableViewController");
-    Class layoutTarget = concreteChat ?: baseChat;
+    // Trace v2 identifies ChatTableViewController as the actual visible screen class.
+    // Wait for it explicitly so a subclass override cannot bypass a BaseChatTVC hook.
+    Class layoutTarget = concreteChat;
 
     if (audioItem && !ZVDurationHookInstalled) {
         ZVHookDirectMethod(audioItem, sel_registerName("duration"),
@@ -509,11 +512,13 @@ static BOOL ZVInstallRuntimeHooksOnce(void) {
     BOOL entryReady = ZVChatLayoutHookInstalled;
     BOOL voiceReady = ZVAddVoiceHookInstalled;
     BOOL durationReady = ZVDurationHookInstalled;
-    NSLog(@"[ZolaCN][Voice] runtime hook state: BaseChatTVC=%@ ChatTableViewController=%@ layout=%d addVoice=%d duration=%d createAttach=%d",
-          baseChat ? @"loaded" : @"pending",
-          concreteChat ? @"loaded" : @"pending",
-          ZVChatLayoutHookInstalled, ZVAddVoiceHookInstalled,
-          ZVDurationHookInstalled, ZVCreateAttachHookInstalled);
+    NSString *state = [NSString stringWithFormat:@"Base=%d Chat=%d layout=%d addVoice=%d duration=%d create=%d",
+        baseChat != Nil, concreteChat != Nil, ZVChatLayoutHookInstalled,
+        ZVAddVoiceHookInstalled, ZVDurationHookInstalled, ZVCreateAttachHookInstalled];
+    if (![state isEqualToString:ZVLastRuntimeHookState]) {
+        ZVLastRuntimeHookState = state;
+        NSLog(@"[ZolaCN][Voice] runtime hook state changed: %@", state);
+    }
 
     // Entry injection only needs the layout hook; voice sending and duration hooks
     // are tracked independently and retried until their owning classes are loaded.
@@ -531,11 +536,10 @@ static void ZVScheduleRuntimeHookAttempt(NSUInteger attempt) {
             if (ZVInstallRuntimeHooksOnce()) {
                 NSLog(@"[ZolaCN][Voice] required runtime hooks installed after %lu attempt(s)",
                       (unsigned long)(attempt + 1));
-            } else if (attempt < 30) {
-                ZVScheduleRuntimeHookAttempt(attempt + 1);
             } else {
-                NSLog(@"[ZolaCN][Voice] runtime hook installation timed out: layout=%d addVoice=%d duration=%d",
-                      ZVChatLayoutHookInstalled, ZVAddVoiceHookInstalled, ZVDurationHookInstalled);
+                // The chat controller may only be loaded after the user opens a conversation.
+                // Continue cheap class-presence checks until the required hooks are installed.
+                ZVScheduleRuntimeHookAttempt(attempt + 1);
             }
         }
     });
