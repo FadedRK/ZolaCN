@@ -2,7 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-static NSString * const ZVTLogPath = @"/var/mobile/Library/Logs/ZolaVoiceTrace.log";
+static NSString *ZVTLogPath(void) {\n    NSURL *url = [[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask] firstObject];\n    return [[url URLByAppendingPathComponent:@"ZolaVoiceTrace.log"] path];\n}\nstatic Class ZolaVoiceTraceClass(void);
 static NSMutableSet<NSString *> *ZVTSeenClasses;
 static BOOL ZVTInstalled;
 
@@ -13,9 +13,9 @@ static void ZVTLog(NSString *format, ...) {
     NSString *entry = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], line];
     NSLog(@"[ZolaCN][VoiceTrace] %@", line);
     @synchronized (ZolaVoiceTraceClass()) {
-        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:ZVTLogPath];
+        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:ZVTLogPath()];
         if (!fh) {
-            [[NSFileManager defaultManager] createFileAtPath:ZVTLogPath contents:nil attributes:nil];
+            [[NSFileManager defaultManager] createFileAtPath:ZVTLogPath() contents:nil attributes:nil];
             fh = [NSFileHandle fileHandleForWritingAtPath:ZVTLogPath];
         }
         [fh seekToEndOfFile];
