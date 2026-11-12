@@ -489,7 +489,8 @@ void ZVInstall(void) {
 }
 
 - (void)importAudio {
-    UTType *zipType = [UTType typeWithFilenameExtension:@"zip"] ?: UTType.data;
+    UTType *zipType = [UTType typeWithFilenameExtension:@"zip"];
+    if (!zipType) zipType = [UTType typeWithIdentifier:@"public.data"];
     UIDocumentPickerViewController *picker =
         [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeAudio, zipType] asCopy:YES];
     picker.delegate = self;
