@@ -296,8 +296,10 @@ static void ZVChatViewDidLayoutSubviews(id self, SEL cmd) {
     ZVInjectVoicePackEntry(self);
 }
 
-static void ZVHookChatLayout(Class chatController) {
-    if (!chatController) return;
+static BOOL ZVHookChatLayout(Class chatController) {
+    if (!chatController) return NO;
+    if (ZVChatLayoutHookInstalled) return YES;
+
     SEL selector = @selector(viewDidLayoutSubviews);
     unsigned int count = 0;
     Method *methods = class_copyMethodList(chatController, &count);
@@ -310,23 +312,28 @@ static void ZVHookChatLayout(Class chatController) {
     if (direct) {
         ZVOriginalChatViewDidLayoutSubviews =
             method_setImplementation(direct, (IMP)ZVChatViewDidLayoutSubviews);
-        NSLog(@"[ZolaCN][Voice] hooked direct %@ viewDidLayoutSubviews", NSStringFromClass(chatController));
-        return;
+        ZVChatLayoutHookInstalled = (ZVOriginalChatViewDidLayoutSubviews != NULL);
+        NSLog(@"[ZolaCN][Voice] hooked direct %@ viewDidLayoutSubviews installed=%d",
+              NSStringFromClass(chatController), ZVChatLayoutHookInstalled);
+        return ZVChatLayoutHookInstalled;
     }
 
     Method inherited = class_getInstanceMethod(chatController, selector);
     if (!inherited) {
         NSLog(@"[ZolaCN][Voice] viewDidLayoutSubviews unavailable for %@", NSStringFromClass(chatController));
-        return;
+        return NO;
     }
     const char *types = method_getTypeEncoding(inherited);
     ZVOriginalChatViewDidLayoutSubviews = method_getImplementation(inherited);
     if (class_addMethod(chatController, selector, (IMP)ZVChatViewDidLayoutSubviews, types)) {
-        NSLog(@"[ZolaCN][Voice] added chat-scoped viewDidLayoutSubviews override for %@", NSStringFromClass(chatController));
-    } else {
-        ZVOriginalChatViewDidLayoutSubviews = NULL;
-        NSLog(@"[ZolaCN][Voice] failed to add chat layout hook for %@", NSStringFromClass(chatController));
+        ZVChatLayoutHookInstalled = YES;
+        NSLog(@"[ZolaCN][Voice] added chat-scoped viewDidLayoutSubviews override for %@ original=%p",
+              NSStringFromClass(chatController), ZVOriginalChatViewDidLayoutSubviews);
+        return YES;
     }
+    ZVOriginalChatViewDidLayoutSubviews = NULL;
+    NSLog(@"[ZolaCN][Voice] failed to add chat layout hook for %@", NSStringFromClass(chatController));
+    return NO;
 }
 
 
@@ -334,6 +341,11 @@ static const void *ZVCustomDurationAssociationKey = &ZVCustomDurationAssociation
 static IMP ZVOriginalAudioItemDuration;
 static IMP ZVOriginalAddSendingVoice;
 static BOOL ZVRuntimeHooksInstalled;
+static BOOL ZVRuntimeHooksStarted;
+static BOOL ZVDurationHookInstalled;
+static BOOL ZVAddVoiceHookInstalled;
+static BOOL ZVCreateAttachHookInstalled;
+static BOOL ZVChatLayoutHookInstalled;
 
 
 static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatController, NSString **errorText) {
@@ -464,27 +476,78 @@ static void ZVHookDirectMethod(Class cls, SEL selector, IMP replacement, IMP *or
     NSLog(@"[ZolaCN][Voice] hook ready: %@ %@", NSStringFromClass(cls), NSStringFromSelector(selector));
 }
 
-void ZVInstall(void) {
-    @synchronized ([NSObject class]) {
-        if (ZVRuntimeHooksInstalled) return;
-        ZVRuntimeHooksInstalled = YES;
+static BOOL ZVInstallRuntimeHooksOnce(void) {
+    Class audioItem = NSClassFromString(@"CommFeatureBase.AudioItem");
+    Class baseChat = NSClassFromString(@"BaseChatTVC");
+    // The trace identified this as the concrete controller used by the actual chat screen.
+    Class concreteChat = NSClassFromString(@"ChatTableViewController");
+    Class layoutTarget = concreteChat ?: baseChat;
+
+    if (audioItem && !ZVDurationHookInstalled) {
+        ZVHookDirectMethod(audioItem, sel_registerName("duration"),
+                           (IMP)ZVAudioItemDuration, &ZVOriginalAudioItemDuration);
+        ZVDurationHookInstalled = (ZVOriginalAudioItemDuration != NULL);
     }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 6 * NSEC_PER_SEC),
-                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+
+    if (baseChat && !ZVAddVoiceHookInstalled) {
+        ZVHookDirectMethod(baseChat,
+                           sel_registerName("addSendingVoiceWithAudioItem:fileLink:uploading:source:"),
+                           (IMP)ZVAddSendingVoice, &ZVOriginalAddSendingVoice);
+        ZVAddVoiceHookInstalled = (ZVOriginalAddSendingVoice != NULL);
+    }
+
+    if (baseChat && !ZVCreateAttachHookInstalled) {
+        ZVHookDirectMethod(baseChat, sel_registerName("createAttachMediaView"),
+                           (IMP)ZVCreateAttachMediaView, &ZVOriginalCreateAttachMediaView);
+        ZVCreateAttachHookInstalled = (ZVOriginalCreateAttachMediaView != NULL);
+    }
+
+    if (layoutTarget && !ZVChatLayoutHookInstalled) {
+        ZVHookChatLayout(layoutTarget);
+    }
+
+    BOOL entryReady = ZVChatLayoutHookInstalled;
+    BOOL voiceReady = ZVAddVoiceHookInstalled;
+    BOOL durationReady = ZVDurationHookInstalled;
+    NSLog(@"[ZolaCN][Voice] runtime hook state: BaseChatTVC=%@ ChatTableViewController=%@ layout=%d addVoice=%d duration=%d createAttach=%d",
+          baseChat ? @"loaded" : @"pending",
+          concreteChat ? @"loaded" : @"pending",
+          ZVChatLayoutHookInstalled, ZVAddVoiceHookInstalled,
+          ZVDurationHookInstalled, ZVCreateAttachHookInstalled);
+
+    // Entry injection only needs the layout hook; voice sending and duration hooks
+    // are tracked independently and retried until their owning classes are loaded.
+    if (entryReady && voiceReady && durationReady) {
+        ZVRuntimeHooksInstalled = YES;
+        return YES;
+    }
+    return NO;
+}
+
+static void ZVScheduleRuntimeHookAttempt(NSUInteger attempt) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)NSEC_PER_SEC),
+                   dispatch_get_main_queue(), ^{
         @autoreleasepool {
-            Class audioItem = NSClassFromString(@"CommFeatureBase.AudioItem");
-            Class chatController = NSClassFromString(@"BaseChatTVC");
-            ZVHookDirectMethod(audioItem, sel_registerName("duration"),
-                              (IMP)ZVAudioItemDuration, &ZVOriginalAudioItemDuration);
-            ZVHookDirectMethod(chatController,
-                              sel_registerName("addSendingVoiceWithAudioItem:fileLink:uploading:source:"),
-                              (IMP)ZVAddSendingVoice, &ZVOriginalAddSendingVoice);
-            ZVHookDirectMethod(chatController,
-                              sel_registerName("createAttachMediaView"),
-                              (IMP)ZVCreateAttachMediaView, &ZVOriginalCreateAttachMediaView);
-            ZVHookChatLayout(chatController);
+            if (ZVInstallRuntimeHooksOnce()) {
+                NSLog(@"[ZolaCN][Voice] required runtime hooks installed after %lu attempt(s)",
+                      (unsigned long)(attempt + 1));
+            } else if (attempt < 30) {
+                ZVScheduleRuntimeHookAttempt(attempt + 1);
+            } else {
+                NSLog(@"[ZolaCN][Voice] runtime hook installation timed out: layout=%d addVoice=%d duration=%d",
+                      ZVChatLayoutHookInstalled, ZVAddVoiceHookInstalled, ZVDurationHookInstalled);
+            }
         }
     });
+}
+
+void ZVInstall(void) {
+    @synchronized ([NSObject class]) {
+        if (ZVRuntimeHooksStarted) return;
+        ZVRuntimeHooksStarted = YES;
+    }
+    NSLog(@"[ZolaCN][Voice] starting retryable runtime hook installation");
+    ZVScheduleRuntimeHookAttempt(0);
 }
 
 @interface ZolaVoiceSettingsController : UITableViewController <UIDocumentPickerDelegate, AVAudioPlayerDelegate>
