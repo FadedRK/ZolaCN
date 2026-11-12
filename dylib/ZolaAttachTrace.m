@@ -21,130 +21,186 @@ static NSString *ZATClean(NSString *value) {
     if (![value isKindOfClass:NSString.class] || value.length == 0) return @"";
     NSString *s = [value stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
     s = [s stringByReplacingOccurrencesOfString:@"\r" withString:@" "];
+    s = [s stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (s.length > 100) s = [[s substringToIndex:100] stringByAppendingString:@"…"];
     return s;
 }
 
-static NSString *ZATViewText(UIView *view) {
+static NSString *ZATElementText(UIView *view) {
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
     if ([view isKindOfClass:UILabel.class]) {
         NSString *t = ZATClean(((UILabel *)view).text);
         if (t.length) [parts addObject:[@"label=" stringByAppendingString:t]];
     }
     if ([view isKindOfClass:UIButton.class]) {
-        UIButton *button = (UIButton *)view;
-        NSString *title = ZATClean([button titleForState:UIControlStateNormal]);
-        if (title.length) [parts addObject:[@"button=" stringByAppendingString:title]];
+        NSString *t = ZATClean([(UIButton *)view titleForState:UIControlStateNormal]);
+        if (t.length) [parts addObject:[@"button=" stringByAppendingString:t]];
     }
-    NSString *accessibilityLabel = ZATClean(view.accessibilityLabel);
-    if (accessibilityLabel.length) [parts addObject:[@"a11y=" stringByAppendingString:accessibilityLabel]];
+    NSString *a11y = ZATClean(view.accessibilityLabel);
+    if (a11y.length) [parts addObject:[@"a11y=" stringByAppendingString:a11y]];
     NSString *identifier = ZATClean(view.accessibilityIdentifier);
     if (identifier.length) [parts addObject:[@"id=" stringByAppendingString:identifier]];
     return [parts componentsJoinedByString:@" | "];
 }
 
-static BOOL ZATIsKnownTileLabel(NSString *raw) {
-    NSString *s = raw.lowercaseString;
-    NSArray<NSString *> *keys = @[
-        @"文本", @"text", @"văn bản", @"van ban",
-        @"gif", @"文档", @"文件", @"document", @"tài liệu", @"tai lieu",
-        @"地点", @"位置", @"location", @"vị trí", @"vi tri",
-        @"提醒", @"reminder", @"nhắc", @"nhac",
-        @"快速消息", @"quick message", @"名片", @"contact card",
-        @"转账", @"transfer", @"我的文档", @"my files",
-        @"涂鸦", @"doodle", @"发送账户号码", @"account number"
-    ];
-    for (NSString *key in keys) {
-        if ([s isEqualToString:key] || [s containsString:key]) return YES;
+static NSString *ZATPrimaryText(UIView *view) {
+    if ([view isKindOfClass:UILabel.class]) return ZATClean(((UILabel *)view).text).lowercaseString;
+    if ([view isKindOfClass:UIButton.class]) {
+        NSString *s = ZATClean([(UIButton *)view titleForState:UIControlStateNormal]);
+        if (s.length) return s.lowercaseString;
     }
-    return NO;
+    NSString *a11y = ZATClean(view.accessibilityLabel);
+    return a11y.lowercaseString ?: @"";
 }
 
-static void ZATScanForMarkers(UIView *view, NSMutableSet<NSString *> *markers, NSUInteger *visited) {
-    if (!view || *visited >= 600 || view.hidden || view.alpha < 0.05) return;
+static BOOL ZATIsExactAttachmentTitle(NSString *s) {
+    static NSSet<NSString *> *titles;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        titles = [NSSet setWithArray:@[
+            @"文本", @"text", @"văn bản", @"van ban",
+            @"@gif", @"gif",
+            @"文档", @"文件", @"document", @"tài liệu", @"tai lieu",
+            @"地点", @"位置", @"location", @"vị trí", @"vi tri",
+            @"提醒", @"reminder", @"nhắc", @"nhac",
+            @"快速消息", @"quick message", @"名片", @"contact card",
+            @"转账", @"transfer", @"我的文档", @"my files",
+            @"涂鸦", @"doodle", @"发送账户号码", @"account number",
+            @"chuyển khoản", @"gửi số tài khoản"
+        ]];
+    });
+    return [titles containsObject:(s ?: @"")];
+}
+
+static void ZATDumpAncestors(UIView *view, UIWindow *window, NSString *nodePath, NSMutableString *out) {
+    UIView *current = view;
+    NSString *path = nodePath;
+    for (NSUInteger depth = 0; current && depth < 9; depth++) {
+        CGRect frame = current == window ? window.bounds : [current convertRect:current.bounds toView:window];
+        [out appendFormat:@"ANCESTOR markerPath=%@ depth=%lu class=%@ frameWindow=%@ bounds=%@ hidden=%d alpha=%.2f interaction=%d subviews=%lu text={%@}\n",
+            path, (unsigned long)depth, NSStringFromClass(current.class),
+            NSStringFromCGRect(frame), NSStringFromCGRect(current.bounds),
+            current.hidden, current.alpha, current.userInteractionEnabled,
+            (unsigned long)current.subviews.count, ZATElementText(current)];
+        current = current.superview;
+        NSRange dot = [path rangeOfString:@"." options:NSBackwardsSearch];
+        if (dot.location != NSNotFound) path = [path substringToIndex:dot.location];
+        else path = @"root";
+    }
+}
+
+static void ZATDumpSiblingViews(UIView *container, UIWindow *window, NSString *containerPath, NSMutableString *out) {
+    NSUInteger index = 0;
+    for (UIView *child in container.subviews) {
+        CGRect frame = [child convertRect:child.bounds toView:window];
+        [out appendFormat:@"SIBLING parentPath=%@ index=%lu class=%@ frameWindow=%@ hidden=%d alpha=%.2f interaction=%d text={%@}\n",
+            containerPath, (unsigned long)index++, NSStringFromClass(child.class),
+            NSStringFromCGRect(frame), child.hidden, child.alpha,
+            child.userInteractionEnabled, ZATElementText(child)];
+        if (index >= 48) break;
+    }
+}
+
+static void ZATWalkVisibleTree(UIView *view, UIWindow *window, NSString *nodePath,
+                               NSUInteger depth, NSUInteger *visited,
+                               NSMutableSet<NSString *> *matched,
+                               NSMutableString *out) {
+    if (!view || *visited >= 1000 || depth > 26 || view.hidden || view.alpha < 0.05) return;
     (*visited)++;
-    if ([view isKindOfClass:UILabel.class]) {
-        NSString *text = ZATClean(((UILabel *)view).text);
-        if (text.length && ZATIsKnownTileLabel(text)) [markers addObject:text.lowercaseString];
-    } else if ([view isKindOfClass:UIButton.class]) {
-        NSString *text = ZATClean([(UIButton *)view titleForState:UIControlStateNormal]);
-        if (text.length && ZATIsKnownTileLabel(text)) [markers addObject:text.lowercaseString];
-    }
-    for (UIView *child in view.subviews) {
-        ZATScanForMarkers(child, markers, visited);
-        if (*visited >= 600) break;
-    }
-}
 
-static void ZATAppendTree(UIView *view, UIView *window, NSUInteger depth, NSString *nodePath,
-                          NSMutableString *out, NSUInteger *count) {
-    if (!view || *count >= 600 || depth > 18) return;
-    (*count)++;
+    NSString *elementText = ZATElementText(view);
+    NSString *primary = ZATPrimaryText(view);
+    if (ZATIsExactAttachmentTitle(primary)) {
+        NSString *unique = [NSString stringWithFormat:@"%@|%@", primary, nodePath];
+        if (![matched containsObject:unique]) {
+            [matched addObject:unique];
+            CGRect frame = [view convertRect:view.bounds toView:window];
+            [out appendFormat:@"\nMATCH path=%@ class=%@ frameWindow=%@ bounds=%@ text={%@}\n",
+                nodePath, NSStringFromClass(view.class), NSStringFromCGRect(frame),
+                NSStringFromCGRect(view.bounds), elementText];
+            ZATDumpAncestors(view, window, nodePath, out);
+            UIView *tile = view;
+            for (NSUInteger i = 0; tile.superview && i < 3; i++) tile = tile.superview;
+            if (tile.superview) {
+                NSString *parentPath = nodePath;
+                for (NSUInteger i = 0; i < 4; i++) {
+                    NSRange dot = [parentPath rangeOfString:@"." options:NSBackwardsSearch];
+                    if (dot.location == NSNotFound) break;
+                    parentPath = [parentPath substringToIndex:dot.location];
+                }
+                ZATDumpSiblingViews(tile.superview, window, parentPath, out);
+            }
+        }
+    }
 
-    CGRect frameWindow = view == window ? window.bounds : [view convertRect:view.bounds toView:window];
-    NSString *text = ZATViewText(view);
-    [out appendFormat:@"NODE %@ depth=%lu class=%@ frameWindow=%@ bounds=%@ hidden=%d alpha=%.2f interaction=%d subviews=%lu text={%@}\n",
-        nodePath, (unsigned long)depth, NSStringFromClass(view.class),
-        NSStringFromCGRect(frameWindow), NSStringFromCGRect(view.bounds),
-        view.hidden, view.alpha, view.userInteractionEnabled,
-        (unsigned long)view.subviews.count, text];
+    // Log candidate grids that can hold the four-column attachment tiles.
+    NSString *className = NSStringFromClass(view.class);
+    if ([className containsString:@"CollectionView"] ||
+        [className containsString:@"Grid"] ||
+        [className containsString:@"StackView"]) {
+        CGRect frame = [view convertRect:view.bounds toView:window];
+        [out appendFormat:@"CONTAINER path=%@ class=%@ frameWindow=%@ bounds=%@ hidden=%d alpha=%.2f subviews=%lu id=%@\n",
+            nodePath, className, NSStringFromCGRect(frame), NSStringFromCGRect(view.bounds),
+            view.hidden, view.alpha, (unsigned long)view.subviews.count,
+            ZATClean(view.accessibilityIdentifier)];
+    }
 
     NSUInteger index = 0;
     for (UIView *child in view.subviews) {
         NSString *childPath = [nodePath stringByAppendingFormat:@".%lu", (unsigned long)index++];
-        ZATAppendTree(child, window, depth + 1, childPath, out, count);
-        if (*count >= 600) break;
+        ZATWalkVisibleTree(child, window, childPath, depth + 1, visited, matched, out);
+        if (*visited >= 1000) break;
     }
 }
 
 static void ZATCaptureIfAttachmentPanelVisible(UIViewController *chatController, NSString *trigger) {
-    if (ZATCaptured || !NSThread.isMainThread || ![chatController isKindOfClass:UIViewController.class]) return;
+    if (ZATCaptured || !NSThread.isMainThread ||
+        ![chatController isKindOfClass:UIViewController.class]) return;
     CFTimeInterval now = CACurrentMediaTime();
-    if (now - ZATLastProbe < 0.45) return;
+    if (now - ZATLastProbe < 0.4) return;
     ZATLastProbe = now;
 
     UIView *controllerView = chatController.view;
     UIWindow *window = controllerView.window;
-    UIView *root = window ?: controllerView;
-    NSMutableSet<NSString *> *markers = [NSMutableSet set];
-    NSUInteger scanned = 0;
-    ZATScanForMarkers(root, markers, &scanned);
+    if (!window) return;
 
-    BOOL hasTextTile = NO;
-    for (NSString *marker in markers) {
-        if ([marker isEqualToString:@"文本"] || [marker isEqualToString:@"text"] ||
-            [marker containsString:@"văn bản"] || [marker containsString:@"van ban"]) {
-            hasTextTile = YES;
-            break;
-        }
+    NSMutableSet<NSString *> *matched = [NSMutableSet set];
+    NSMutableString *snapshot = [NSMutableString string];
+    NSUInteger visited = 0;
+    ZATWalkVisibleTree(window, window, @"0", 0, &visited, matched, snapshot);
+
+    NSMutableSet<NSString *> *uniqueTitles = [NSMutableSet set];
+    for (NSString *entry in matched) {
+        NSRange sep = [entry rangeOfString:@"|"];
+        if (sep.location != NSNotFound) [uniqueTitles addObject:[entry substringToIndex:sep.location]];
     }
-    // The attachment menu is only considered open when the "Text" tile and
-    // several other attachment actions are simultaneously visible.
-    if (!hasTextTile || markers.count < 4) return;
+    BOOL hasText = [uniqueTitles containsObject:@"文本"] ||
+                   [uniqueTitles containsObject:@"text"] ||
+                   [uniqueTitles containsObject:@"văn bản"] ||
+                   [uniqueTitles containsObject:@"van ban"];
+    // Require a cluster of exact attachment-menu labels, not substring matches in hidden message cells.
+    if (!hasText || uniqueTitles.count < 5) return;
 
     ZATCaptured = YES;
-    NSMutableString *snapshot = [NSMutableString string];
-    [snapshot appendFormat:@"ATTACH_TRACE version=1 date=%@\n", [NSDate date]];
-    [snapshot appendFormat:@"TRIGGER %@\n", trigger ?: @"layout"];
-    [snapshot appendFormat:@"CONTROLLER class=%@ title=%@ viewClass=%@ viewFrame=%@ windowClass=%@ windowBounds=%@\n",
+    NSMutableString *report = [NSMutableString string];
+    [report appendFormat:@"ATTACH_TRACE version=2 date=%@\n", [NSDate date]];
+    [report appendFormat:@"TRIGGER %@\n", trigger ?: @"layout"];
+    [report appendFormat:@"CONTROLLER class=%@ title=%@ viewClass=%@ viewFrame=%@ windowClass=%@ windowBounds=%@\n",
         NSStringFromClass(chatController.class), ZATClean(chatController.title),
         NSStringFromClass(controllerView.class), NSStringFromCGRect(controllerView.frame),
-        window ? NSStringFromClass(window.class) : @"none",
-        window ? NSStringFromCGRect(window.bounds) : @"none"];
-    [snapshot appendFormat:@"PANEL_MARKERS count=%lu scannedViews=%lu values=%@\n",
-        (unsigned long)markers.count, (unsigned long)scanned,
-        [[markers allObjects] sortedArrayUsingSelector:@selector(compare:)]];
-
-    NSUInteger count = 0;
-    ZATAppendTree(root, window ?: root, 0, @"0", snapshot, &count);
-    [snapshot appendFormat:@"END nodes=%lu truncated=%d\n", (unsigned long)count, count >= 600];
+        NSStringFromClass(window.class), NSStringFromCGRect(window.bounds)];
+    [report appendFormat:@"MATCHED_TITLES count=%lu unique=%@\n",
+        (unsigned long)uniqueTitles.count,
+        [[uniqueTitles allObjects] sortedArrayUsingSelector:@selector(compare:)]];
+    [report appendFormat:@"VISIBLE_VIEWS_SCANNED=%lu MATCH_NODES=%lu\n",
+        (unsigned long)visited, (unsigned long)matched.count];
+    [report appendString:snapshot];
+    [report appendString:@"\nEND ATTACH_TRACE_V2\n"];
 
     dispatch_async(ZATLogQueue, ^{
-        NSString *path = ZATTracePath();
-        NSData *data = [snapshot dataUsingEncoding:NSUTF8StringEncoding];
-        [data writeToFile:path options:NSDataWritingAtomic error:nil];
-        NSLog(@"[ZolaCN][AttachTrace] captured attachment panel: %@ (%lu nodes, %lu marker labels)",
-              path, (unsigned long)count, (unsigned long)markers.count);
+        [report writeToFile:ZATTracePath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSLog(@"[ZolaCN][AttachTrace] V2 captured %lu exact menu labels, %lu visible views: %@",
+              (unsigned long)uniqueTitles.count, (unsigned long)visited, ZATTracePath());
     });
 }
 
@@ -213,10 +269,10 @@ void ZATInstall(void) {
     }
     ZATLogQueue = dispatch_queue_create("com.fadedrk.zolacn.attachtrace.log", DISPATCH_QUEUE_SERIAL);
     dispatch_async(ZATLogQueue, ^{
-        [@"ATTACH_TRACE_START\n" writeToFile:ZATTracePath()
-                                  atomically:YES
-                                    encoding:NSUTF8StringEncoding
-                                       error:nil];
+        [@"ATTACH_TRACE_START version=2\n" writeToFile:ZATTracePath()
+                                           atomically:YES
+                                             encoding:NSUTF8StringEncoding
+                                                error:nil];
     });
 
     __block NSUInteger attempts = 0;
