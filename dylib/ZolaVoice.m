@@ -4,6 +4,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
 #import <zlib.h>
+#import <string.h>
 
 static NSString * const ZVModeKey = @"ZolaVoiceDurationMode";
 static NSString * const ZVCustomDurationKey = @"ZolaVoiceCustomDuration";
@@ -355,7 +356,7 @@ void ZVInstall(void) {
 
 - (void)importAudio {
     UIDocumentPickerViewController *picker =
-        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeAudio, UTType.zip] asCopy:YES];
+        [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.audio", @"public.zip-archive"] inMode:UIDocumentPickerModeImport];
     picker.delegate = self;
     picker.allowsMultipleSelection = YES;
     [self presentViewController:picker animated:YES completion:nil];
