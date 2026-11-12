@@ -6,7 +6,7 @@ static dispatch_queue_t ZVTQueue;
 static BOOL ZVTInstalled;
 static NSUInteger ZVTCount;
 static IMP OItemInit, OItemDuration, OItemSetDuration, OItemFileSize, OEntityDuration;
-static IMP OAddVoice, OUploadDone, OUpdateVoice, OVMStart, OVMStopSend, OVMStopOverlay, OVMStopFocus;
+static IMP OAddVoice, OUpdateVoice, OVMStart, OVMStopSend, OVMStopOverlay, OVMStopFocus;
 
 static void ZVTLog(NSString *s) {
     if (!ZVTQueue) return;
@@ -62,10 +62,6 @@ static double ZVTEntityDuration(id self, SEL cmd) {
 static void ZVTAddVoice(id self, SEL cmd, id item, id link, BOOL uploading, long long source) {
     ZVTEvent([NSString stringWithFormat:@"ADD_VOICE item=%@ uploading=%d source=%lld",ZVTClass(item),uploading,source]);
     ((void(*)(id,SEL,id,id,BOOL,long long))OAddVoice)(self,cmd,item,link,uploading,source);
-}
-static void ZVTUploadDone(id self, SEL cmd, id uploader, id config, id link) {
-    ZVTEvent([NSString stringWithFormat:@"UPLOAD_DONE uploader=%@ link=%@",ZVTClass(uploader),ZVTClass(link)]);
-    ((void(*)(id,SEL,id,id,id))OUploadDone)(self,cmd,uploader,config,link);
 }
 static void ZVTUpdateVoice(id self, SEL cmd, id entity) {
     ZVTEvent([NSString stringWithFormat:@"UPDATE_VOICE_UI entity=%@",ZVTClass(entity)]);
