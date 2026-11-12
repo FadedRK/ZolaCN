@@ -297,6 +297,8 @@ static void ZVChatViewDidLayoutSubviews(id self, SEL cmd) {
 }
 
 
+static BOOL ZVChatLayoutHookInstalled;
+
 static BOOL ZVHookChatLayout(Class chatController) {
     if (!chatController) return NO;
     if (ZVChatLayoutHookInstalled) return YES;
@@ -346,7 +348,6 @@ static BOOL ZVRuntimeHooksStarted;
 static BOOL ZVDurationHookInstalled;
 static BOOL ZVAddVoiceHookInstalled;
 static BOOL ZVCreateAttachHookInstalled;
-static BOOL ZVChatLayoutHookInstalled;
 static NSString *ZVLastRuntimeHookState;
 
 
