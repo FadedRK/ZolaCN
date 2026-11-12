@@ -37,9 +37,9 @@ static double ZVAudioItemDuration(id self, SEL cmd) {
 static void ZVAddSendingVoice(id self, SEL cmd, id audioItem, id fileLink, BOOL uploading, long long source) {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     if ([defaults integerForKey:ZVModeKey] == 1 && audioItem) {
-        NSInteger seconds = [defaults integerForKey:ZVCustomDurationKey];
-        if (seconds <= 0) seconds = 5;
-        seconds = MIN(seconds, 3600);
+        double seconds = [defaults doubleForKey:ZVCustomDurationKey];
+        if (seconds <= 0) seconds = 5.0;
+        seconds = MIN(seconds, 3600.0);
         objc_setAssociatedObject(audioItem, ZVCustomDurationAssociationKey,
                                  @(seconds), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         NSLog(@"[ZolaCN][Voice] custom outgoing duration enabled: %ld sec", (long)seconds);
@@ -173,9 +173,9 @@ void ZVInstall(void) {
         cell.accessoryView = seg;
     } else if (indexPath.section == 0) {
         cell.textLabel.text = @"自定义时长";
-        NSInteger value = [defaults integerForKey:ZVCustomDurationKey];
-        if (value <= 0) value = 5;
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"%ld 秒", (long)value];
+        double value = [defaults doubleForKey:ZVCustomDurationKey];
+        if (value <= 0) value = 5.0;
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ 秒", [NSString stringWithFormat:@"%.2f", value]];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     } else if (indexPath.row == 0) {
         cell.textLabel.text = @"导入音频文件";
@@ -202,21 +202,33 @@ void ZVInstall(void) {
 }
 
 - (void)chooseDuration {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自定义时长"
-                                                                   message:@"选择发送语音的目标时长"
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    for (NSNumber *number in @[@1, @3, @5, @10, @15, @30, @60]) {
-        NSInteger seconds = number.integerValue;
-        [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%ld 秒", (long)seconds]
-                                                  style:UIAlertActionStyleDefault
-                                                handler:^(__unused UIAlertAction *action) {
-            [NSUserDefaults.standardUserDefaults setInteger:seconds forKey:ZVCustomDurationKey];
-            [self.tableView reloadData];
-        }]];
-    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自定义语音时长"
+                                                                   message:@"输入目标时长（秒），支持小数，范围 0.1–3600 秒"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"例如：1.5 或 8";
+        field.keyboardType = UIKeyboardTypeDecimalPad;
+        double current = [NSUserDefaults.standardUserDefaults doubleForKey:ZVCustomDurationKey];
+        field.text = current > 0 ? [NSString stringWithFormat:@"%.2f", current] : @"5";
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    alert.popoverPresentationController.sourceView = self.view;
-    alert.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        NSString *raw = alert.textFields.firstObject.text ?: @"";
+        NSScanner *scanner = [NSScanner scannerWithString:[raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]];
+        double seconds = 0;
+        BOOL valid = [scanner scanDouble:&seconds] && scanner.isAtEnd && isfinite(seconds) && seconds >= 0.1 && seconds <= 3600.0;
+        if (!valid) {
+            UIAlertController *error = [UIAlertController alertControllerWithTitle:@"时长无效"
+                                                                           message:@"请输入 0.1 到 3600 之间的数字。"
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [error addAction:[UIAlertAction actionWithTitle:@"重新输入" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self chooseDuration]; }]];
+            [self presentViewController:error animated:YES completion:nil];
+            return;
+        }
+        [NSUserDefaults.standardUserDefaults setDouble:seconds forKey:ZVCustomDurationKey];
+        [self.tableView reloadData];
+    }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
