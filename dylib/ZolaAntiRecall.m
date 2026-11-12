@@ -338,7 +338,7 @@ static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
 
 - (NSInteger)tableView:(UITableView *)tableView
  numberOfRowsInSection:(NSInteger)section {
-    return 4;
+    return 5;
 }
 
 - (NSString *)tableView:(UITableView *)tableView
@@ -427,14 +427,6 @@ static NSString *ZARSettingText(NSString *zh, NSString *vi, NSString *en) {
                            @"Tăng cường giọng nói",
                            @"Voice Enhancements");
         cell.detailTextLabel.text = ZARSettingText(@"语音包与时长", @"Gói thoại & thời lượng", @"Voice packs & duration");
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    }
-
-        cell.detailTextLabel.text = ZARSettingText(
-            @"中文",
-            @"Tiếng Việt",
-            @"English"
-        );
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
 
