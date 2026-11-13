@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <dispatch/dispatch.h>
 #import <stdint.h>
@@ -27,6 +28,8 @@ static BOOL ZVTViewModelStartHooked;
 static BOOL __attribute__((unused)) ZVTFirstChunkStackLogged;
 static IMP OOnVoiceSendGetter;
 static IMP OSessionConfigurationInit;
+static IMP OUIApplicationSendAction;
+static BOOL ZVTUIApplicationSendActionHooked;
 static BOOL ZVTOnVoiceSendGetterHooked;
 static BOOL ZVTSessionConfigurationInitHooked;
 
@@ -100,7 +103,7 @@ static void ZVTLog(NSString *line) {
         @autoreleasepool {
             NSURL *cacheURL = [[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory
                                                                        inDomains:NSUserDomainMask] firstObject];
-            NSString *path = [cacheURL URLByAppendingPathComponent:@"ZolaVoiceTrace-v7.3.log"].path;
+            NSString *path = [cacheURL URLByAppendingPathComponent:@"ZolaVoiceTrace-v7.4.log"].path;
             NSString *entry = [NSString stringWithFormat:@"%@ %@\n", ZVTLocalTimestamp(), line];
             NSData *data = [entry dataUsingEncoding:NSUTF8StringEncoding];
             if (![[NSFileManager defaultManager] fileExistsAtPath:path])
@@ -959,11 +962,286 @@ static void ZVTInstallSessionConfigurationInitHook(Class configClass) {
             NSStringFromClass(configClass), ZVTSessionConfigurationInitHooked]);
 }
 
+
+#pragma mark - V7.4 read-only runtime diagnostics
+
+static NSMutableSet<NSString *> *ZVTLoggedVoiceBoardMethodClasses(void) {
+    static NSMutableSet<NSString *> *set;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ set = [NSMutableSet set]; });
+    return set;
+}
+
+static BOOL ZVTNameContainsVoiceRecord(NSString *name) {
+    if (!name.length) return NO;
+    NSString *lower = name.lowercaseString;
+    return [lower containsString:@"voiceboard"] ||
+           [lower containsString:@"voicerecord"] ||
+           [lower containsString:@"voicerecorder"];
+}
+
+/*
+ * Read only the bytes belonging to a declared Objective-C runtime ivar.
+ * Object and C++ pointers are logged as addresses only. Never dereference
+ * unknown Swift/C++ pointers or send them Objective-C messages.
+ */
+static NSString *ZVTReadIvarWordDescription(id object, Ivar ivar, size_t instanceSize) {
+    if (!object || !ivar) return @"unavailable";
+    ptrdiff_t offset = ivar_getOffset(ivar);
+    const char *rawEncoding = ivar_getTypeEncoding(ivar);
+    const char *encoding = ZVTUnqualifiedType(rawEncoding);
+    if (offset < 0 || (size_t)offset >= instanceSize || !encoding || !*encoding)
+        return [NSString stringWithFormat:@"out_of_bounds offset=%td encoding=%s",
+                offset, rawEncoding ?: "?"];
+
+    const uint8_t *base = (const uint8_t *)(__bridge const void *)object;
+    const uint8_t *address = base + (size_t)offset;
+    char code = *encoding;
+
+    if (code == '@' || code == '#' || code == ':' || code == '^' || code == '*' || code == '?') {
+        if ((size_t)offset + sizeof(uintptr_t) > instanceSize) return @"pointer_out_of_bounds";
+        uintptr_t raw = 0;
+        memcpy(&raw, address, sizeof(raw));
+        return [NSString stringWithFormat:@"raw_pointer=0x%llx (not_dereferenced)",
+                (unsigned long long)raw];
+    }
+    if (code == 'c' || code == 'C' || code == 'B') {
+        if ((size_t)offset + sizeof(uint8_t) > instanceSize) return @"scalar_out_of_bounds";
+        uint8_t value = 0; memcpy(&value, address, sizeof(value));
+        return [NSString stringWithFormat:@"u8=%u", (unsigned)value];
+    }
+    if (code == 's' || code == 'S') {
+        if ((size_t)offset + sizeof(uint16_t) > instanceSize) return @"scalar_out_of_bounds";
+        uint16_t value = 0; memcpy(&value, address, sizeof(value));
+        return [NSString stringWithFormat:@"u16=%u", (unsigned)value];
+    }
+    if (code == 'i' || code == 'I') {
+        if ((size_t)offset + sizeof(uint32_t) > instanceSize) return @"scalar_out_of_bounds";
+        uint32_t value = 0; memcpy(&value, address, sizeof(value));
+        return [NSString stringWithFormat:@"u32=%u", value];
+    }
+    if (code == 'l' || code == 'L') {
+        if ((size_t)offset + sizeof(long) > instanceSize) return @"scalar_out_of_bounds";
+        long value = 0; memcpy(&value, address, sizeof(value));
+        return [NSString stringWithFormat:@"long=%ld", value];
+    }
+    if (code == 'q' || code == 'Q') {
+        if ((size_t)offset + sizeof(uint64_t) > instanceSize) return @"scalar_out_of_bounds";
+        uint64_t value = 0; memcpy(&value, address, sizeof(value));
+        return [NSString stringWithFormat:@"u64=%llu", (unsigned long long)value];
+    }
+    if (code == 'f') {
+        if ((size_t)offset + sizeof(float) > instanceSize) return @"scalar_out_of_bounds";
+        float value = 0; memcpy(&value, address, sizeof(value));
+        return [NSString stringWithFormat:@"float=%.6f", value];
+    }
+    if (code == 'd') {
+        if ((size_t)offset + sizeof(double) > instanceSize) return @"scalar_out_of_bounds";
+        double value = 0; memcpy(&value, address, sizeof(value));
+        return [NSString stringWithFormat:@"double=%.9f", value];
+    }
+    return @"aggregate_or_unknown_value_not_read";
+}
+
+static void ZVTDumpInstanceIvars(id object, NSString *label) {
+    if (!object) {
+        ZVTEvent([NSString stringWithFormat:@"IVAR_DUMP_BEGIN label=%@ object=nil", label ?: @"unknown"]);
+        return;
+    }
+    Class dynamicClass = object_getClass(object);
+    size_t instanceSize = dynamicClass ? class_getInstanceSize(dynamicClass) : 0;
+    ZVTEvent([NSString stringWithFormat:@"IVAR_DUMP_BEGIN label=%@ class=%@ pointer=%p instanceSize=%lu",
+              label ?: @"unknown", ZVTClassName(object), object, (unsigned long)instanceSize]);
+    NSUInteger total = 0;
+    for (Class cls = dynamicClass; cls; cls = class_getSuperclass(cls)) {
+        unsigned int count = 0;
+        Ivar *ivars = class_copyIvarList(cls, &count);
+        for (unsigned int i = 0; i < count; i++) {
+            Ivar ivar = ivars[i];
+            const char *name = ivar_getName(ivar);
+            const char *type = ivar_getTypeEncoding(ivar);
+            ptrdiff_t offset = ivar_getOffset(ivar);
+            NSString *value = ZVTReadIvarWordDescription(object, ivar, instanceSize);
+            ZVTEvent([NSString stringWithFormat:
+                @"IVAR_VALUE label=%@ declaringClass=%@ name=%s type=%s offset=%td value=%@",
+                label ?: @"unknown", NSStringFromClass(cls), name ?: "?", type ?: "?", offset, value]);
+            total++;
+        }
+        free(ivars);
+        if (cls == NSObject.class) break;
+    }
+    ZVTEvent([NSString stringWithFormat:@"IVAR_DUMP_END label=%@ count=%lu",
+              label ?: @"unknown", (unsigned long)total]);
+}
+
+static BOOL ZVTIsNumericDirectoryName(NSString *name) {
+    if (!name.length) return NO;
+    NSCharacterSet *nonDigits = [NSCharacterSet.decimalDigitCharacterSet invertedSet];
+    return [name rangeOfCharacterFromSet:nonDigits].location == NSNotFound;
+}
+
+static void ZVTLogVoiceDocumentsSnapshot(NSString *reason) {
+    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
+                                                               NSUserDomainMask, YES).firstObject;
+    if (!documents.length) {
+        ZVTEvent([NSString stringWithFormat:@"VOICE_DOCS_SNAPSHOT reason=%@ documents=unavailable", reason ?: @"unknown"]);
+        return;
+    }
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSArray<NSString *> *codecs = @[@"aac", @"mp3", @"m4a", @"caf", @"wav", @"aif", @"aiff"];
+    NSMutableArray<NSDictionary *> *candidates = [NSMutableArray array];
+    NSArray<NSString *> *accounts = [fm contentsOfDirectoryAtPath:documents error:nil] ?: @[];
+    for (NSString *account in accounts) {
+        if (!ZVTIsNumericDirectoryName(account)) continue;
+        NSString *accountPath = [documents stringByAppendingPathComponent:account];
+        BOOL isDir = NO;
+        if (![fm fileExistsAtPath:accountPath isDirectory:&isDir] || !isDir) continue;
+        NSArray<NSString *> *conversations = [fm contentsOfDirectoryAtPath:accountPath error:nil] ?: @[];
+        for (NSString *conversation in conversations) {
+            if (!ZVTIsNumericDirectoryName(conversation)) continue;
+            NSString *conversationPath = [accountPath stringByAppendingPathComponent:conversation];
+            BOOL conversationIsDir = NO;
+            if (![fm fileExistsAtPath:conversationPath isDirectory:&conversationIsDir] || !conversationIsDir) continue;
+            for (NSString *codec in codecs) {
+                NSString *codecPath = [conversationPath stringByAppendingPathComponent:codec];
+                BOOL codecIsDir = NO;
+                if (![fm fileExistsAtPath:codecPath isDirectory:&codecIsDir] || !codecIsDir) continue;
+                NSArray<NSString *> *names = [fm contentsOfDirectoryAtPath:codecPath error:nil] ?: @[];
+                for (NSString *name in names) {
+                    if (![codecs containsObject:name.pathExtension.lowercaseString]) continue;
+                    NSString *path = [codecPath stringByAppendingPathComponent:name];
+                    NSDictionary *attrs = [fm attributesOfItemAtPath:path error:nil];
+                    if (![attrs[NSFileType] isEqualToString:NSFileTypeRegular]) continue;
+                    [candidates addObject:@{
+                        @"relative": [NSString stringWithFormat:@"%@/%@/%@/%@", account, conversation, codec, name],
+                        @"size": attrs[NSFileSize] ?: @0,
+                        @"modified": attrs[NSFileModificationDate] ?: [NSDate distantPast]
+                    }];
+                }
+            }
+        }
+    }
+    [candidates sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [b[@"modified"] compare:a[@"modified"]];
+    }];
+    ZVTEvent([NSString stringWithFormat:@"VOICE_DOCS_SNAPSHOT_BEGIN reason=%@ candidateCount=%lu",
+              reason ?: @"unknown", (unsigned long)candidates.count]);
+    NSUInteger limit = MIN((NSUInteger)12, candidates.count);
+    for (NSUInteger i = 0; i < limit; i++) {
+        NSDictionary *entry = candidates[i];
+        ZVTEvent([NSString stringWithFormat:
+            @"VOICE_DOCS_FILE rank=%lu relativePath=%@ size=%@ modified=%@",
+            (unsigned long)(i + 1), entry[@"relative"], entry[@"size"], entry[@"modified"]]);
+    }
+    ZVTEvent([NSString stringWithFormat:@"VOICE_DOCS_SNAPSHOT_END reason=%@ logged=%lu",
+              reason ?: @"unknown", (unsigned long)limit]);
+}
+
+static void ZVTLogVoiceBoardMethodInventory(void) {
+    int capacity = objc_getClassList(NULL, 0);
+    if (capacity <= 0) return;
+    Class *classes = (Class *)calloc((size_t)capacity, sizeof(Class));
+    if (!classes) return;
+    int count = objc_getClassList(classes, capacity);
+    for (int i = 0; i < count; i++) {
+        Class cls = classes[i];
+        NSString *className = NSStringFromClass(cls);
+        if (!ZVTNameContainsVoiceRecord(className)) continue;
+        @synchronized (ZVTLoggedVoiceBoardMethodClasses()) {
+            if ([ZVTLoggedVoiceBoardMethodClasses() containsObject:className]) continue;
+            [ZVTLoggedVoiceBoardMethodClasses() addObject:className];
+        }
+        unsigned int methodCount = 0;
+        Method *methods = class_copyMethodList(cls, &methodCount);
+        ZVTEvent([NSString stringWithFormat:@"VOICEBOARD_METHODS_BEGIN class=%@ directInstanceMethodCount=%u",
+                  className, methodCount]);
+        for (unsigned int m = 0; m < methodCount; m++) {
+            SEL selector = method_getName(methods[m]);
+            NSString *selectorName = NSStringFromSelector(selector);
+            if ([selectorName hasPrefix:@"get"] && selectorName.length > 3) continue;
+            if ([selectorName hasPrefix:@"set"] && [selectorName hasSuffix:@":"]) continue;
+            const char *encoding = method_getTypeEncoding(methods[m]);
+            ZVTEvent([NSString stringWithFormat:@"VOICEBOARD_METHOD class=%@ selector=%@ encoding=%s",
+                      className, selectorName, encoding ?: "?"]);
+        }
+        free(methods);
+        ZVTEvent([NSString stringWithFormat:@"VOICEBOARD_METHODS_END class=%@", className]);
+    }
+    free(classes);
+}
+
+/* UIKit target/action observer: records actual control action routing, but does not alter it. */
+static BOOL ZVTUIApplicationSendAction(id self, SEL cmd, SEL action, id target, id sender, id event) {
+    NSString *actionName = action ? NSStringFromSelector(action) : @"(nil)";
+    NSString *targetName = target ? ZVTClassName(target) : @"(responder-chain)";
+    NSString *senderName = sender ? ZVTClassName(sender) : @"nil";
+    NSString *accessibility = @"";
+    NSString *buttonTitle = @"";
+    if ([sender isKindOfClass:UIControl.class]) {
+        UIControl *control = (UIControl *)sender;
+        accessibility = control.accessibilityLabel ?: @"";
+        if ([control isKindOfClass:UIButton.class])
+            buttonTitle = ((UIButton *)control).currentTitle ?: @"";
+    }
+    NSString *combined = [[NSString stringWithFormat:@"%@ %@ %@ %@",
+                            actionName, targetName, accessibility, buttonTitle] lowercaseString];
+    if ([combined containsString:@"voice"] || [combined containsString:@"record"] ||
+        [combined containsString:@"audio"] || [combined containsString:@"mic"] ||
+        [combined containsString:@"语音"] || [combined containsString:@"录制"]) {
+        ZVTEvent([NSString stringWithFormat:
+            @"UI_ACTION_SEND action=%@ targetClass=%@ senderClass=%@ accessibilityLabel=%@ buttonTitle=%@ eventClass=%@",
+            actionName, targetName, senderName, accessibility, buttonTitle, ZVTClassName(event)]);
+    }
+    IMP original = OUIApplicationSendAction;
+    return original ? ((BOOL (*)(id, SEL, SEL, id, id, id))original)
+        (self, cmd, action, target, sender, event) : NO;
+}
+
+static void ZVTInstallUIApplicationSendActionHook(void) {
+    if (ZVTUIApplicationSendActionHooked) return;
+    Class cls = UIApplication.class;
+    SEL selector = sel_registerName("sendAction:to:from:forEvent:");
+    Method method = class_getInstanceMethod(cls, selector);
+    if (!method || method_getNumberOfArguments(method) != 6 ||
+        !ZVTArgumentHasCode(method, 2, ":") ||
+        !ZVTArgumentHasCode(method, 3, "@") ||
+        !ZVTArgumentHasCode(method, 4, "@") ||
+        !ZVTArgumentHasCode(method, 5, "@")) {
+        ZVTLog(@"UI_ACTION_HOOK_SKIPPED reason=method_missing_or_signature_mismatch");
+        return;
+    }
+    char *returnType = method_copyReturnType(method);
+    char returnCode = *ZVTUnqualifiedType(returnType);
+    free(returnType);
+    if (returnCode != 'B' && returnCode != 'c') {
+        ZVTLog(@"UI_ACTION_HOOK_SKIPPED reason=return_type_mismatch");
+        return;
+    }
+    Method direct = ZVTFindDirectMethod(cls, selector);
+    if (direct) {
+        OUIApplicationSendAction = method_setImplementation(direct, (IMP)ZVTUIApplicationSendAction);
+    } else {
+        IMP inherited = method_getImplementation(method);
+        const char *encoding = method_getTypeEncoding(method);
+        if (class_addMethod(cls, selector, (IMP)ZVTUIApplicationSendAction, encoding))
+            OUIApplicationSendAction = inherited;
+    }
+    ZVTUIApplicationSendActionHooked = OUIApplicationSendAction != NULL;
+    ZVTLog([NSString stringWithFormat:@"UI_ACTION_HOOK class=%@ selector=%@ installed=%d",
+            NSStringFromClass(cls), NSStringFromSelector(selector), ZVTUIApplicationSendActionHooked]);
+}
+
+
 static void ZVTUploadDidFinish(id self, SEL cmd, id uploader, id sessionConfiguration, id fileLink) {
     ZVTEvent([NSString stringWithFormat:
         @"UPLOAD_CALLBACK_BEGIN kind=success receiver=%@ uploader=%@ configuration=%@ fileLink=%@",
         ZVTClassName(self), ZVTClassName(uploader), ZVTClassName(sessionConfiguration), ZVTClassName(fileLink)]);
     ZVTReadUploadedVoiceLinkFields(fileLink);
+    ZVTDumpInstanceIvars(sessionConfiguration, @"didFinish.sessionConfiguration");
+    ZVTDumpInstanceIvars(uploader, @"didFinish.uploader");
+    ZVTDumpInstanceIvars(self, @"didFinish.viewModel");
+    ZVTInspectViewModel(self, @"didFinishWithFileLink");
+    ZVTLogVoiceDocumentsSnapshot(@"didFinishWithFileLink");
     IMP original = ZVTOriginalCallbackForInvocation(self, cmd);
     if (original) {
         ((void (*)(id, SEL, id, id, id))original)(self, cmd, uploader, sessionConfiguration, fileLink);
@@ -1026,7 +1304,15 @@ static void ZVTUploadWillChunk(id self, SEL cmd, id uploader, id sessionConfigur
             for (NSString *name in @[@"fileId", @"fileType", @"voiceType", @"toUid", @"messageType",
                                       @"isE2EE", @"sampleRate", @"inputNumberOfChannels", @"startTime"])
                 ZVTReadSafeGetter(sessionConfiguration, name, @"FirstChunk.sessionConfiguration");
-            ZVTReadSafeGetter(uploader, @"delegates", @"FirstChunk.uploader");
+            for (NSString *name in @[@"filePath", @"fileURL", @"localFilePath", @"audioItem",
+                                      @"recordType", @"chunkSize", @"session", @"activeSession",
+                                      @"recordingURL", @"voiceFilePath", @"toUid"])
+                ZVTReadSafeGetter(sessionConfiguration, name, @"FirstChunk.sessionConfiguration.extra");
+            ZVTDumpInstanceIvars(sessionConfiguration, @"willChunk1.sessionConfiguration");
+            ZVTDumpInstanceIvars(uploader, @"willChunk1.uploader");
+            ZVTDumpInstanceIvars(self, @"willChunk1.viewModel");
+            ZVTInspectViewModel(self, @"willUploadChunkId.1");
+            ZVTLogVoiceDocumentsSnapshot(@"willUploadChunkId.1");
             ZVTLogFullStack(@"UPLOAD_FIRST_CHUNK_FULL_STACK");
             ZVTEvent(@"UPLOAD_FIRST_CHUNK_CAPTURE_END");
         }
@@ -1243,6 +1529,8 @@ static void ZVTInstallCoreHooks(void) {
 #pragma mark - Scan and bootstrap
 
 static void ZVTScanRuntime(void) {
+    ZVTInstallUIApplicationSendActionHook();
+    ZVTLogVoiceBoardMethodInventory();
     ZVTInstallAudioItemInitHook();
 
     Class viewModelClass = NSClassFromString(@"CommFeatureBusiness.VoiceBoardViewModel");
@@ -1293,7 +1581,8 @@ static void ZVTScanAttempt(NSUInteger attempt) {
                     ZVTVoiceBoardViewModelFound, ZVTViewModelStartHooked, ZVTAudioItemInitHooked,
                     ZVTOnVoiceSendGetterHooked, ZVTSessionConfigurationInitHooked,
                     ZVTUploadSuccessCallbackHooked, ZVTUploadFailureCallbackHooked,
-                    ZVTUploadWillChunkHooked, ZVTUploadDidChunkHooked]);
+                    ZVTUploadWillChunkHooked, ZVTUploadDidChunkHooked,
+                    ZVTUIApplicationSendActionHooked]);
             }
             if (attempt < 4) ZVTScanAttempt(attempt + 1);
         }
@@ -1305,7 +1594,7 @@ void ZVTInstall(void) {
         if (ZVTInstalled) return;
         ZVTInstalled = YES;
     }
-    ZVTQueue = dispatch_queue_create("com.fadedrk.zolacn.voicetrace.v7_3", DISPATCH_QUEUE_SERIAL);
+    ZVTQueue = dispatch_queue_create("com.fadedrk.zolacn.voicetrace.v7_4", DISPATCH_QUEUE_SERIAL);
     ZVTLog(@"START version=7.3 targeted_upload_link_onVoiceSend_session_init_first_chunk_stack broad_class_dump=DISABLED rawSwiftIvarReads=DISABLED timezone=local log=Library/Caches/ZolaVoiceTrace-v7.3.log");
     ZVTScanAttempt(0);
 }
