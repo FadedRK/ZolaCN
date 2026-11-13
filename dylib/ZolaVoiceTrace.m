@@ -134,15 +134,6 @@ static NSString *ZVTShortObjectValue(id value) {
     return [NSString stringWithFormat:@"%@(%p)", className, value];
 }
 
-static BOOL ZVTIsSensitiveFieldName(NSString *name) {
-    NSString *lower = name.lowercaseString;
-    NSArray<NSString *> *needles = @[@"password", @"passwd", @"secret", @"token",
-                                     @"authorization", @"cookie", @"sessionkey",
-                                     @"cryptkey", @"privatekey", @"apikey", @"auth"];
-    for (NSString *needle in needles) if ([lower containsString:needle]) return YES;
-    return NO;
-}
-
 static BOOL ZVTIsRelevantEntityField(NSString *name) {
     NSString *lower = name.lowercaseString;
     NSArray<NSString *> *needles = @[@"voice", @"audio", @"media", @"file", @"upload",
