@@ -855,7 +855,7 @@ static BOOL ZVConvertToAACADTS(NSURL *sourceURL, NSString *destinationPath, NSSt
         int16_t *samples = (int16_t *)calloc(frameCapacity, sizeof(int16_t));
         AudioBufferList *buffers = (AudioBufferList *)calloc(1, sizeof(AudioBufferList));
         if (!samples || !buffers) {
-            status = memFullErr;
+            status = (OSStatus)-108; // memFullErr: allocation failed
         } else {
             buffers->mNumberBuffers = 1;
             buffers->mBuffers[0].mNumberChannels = 1;
