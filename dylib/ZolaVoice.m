@@ -4,11 +4,25 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
 #import <zlib.h>
+#import <AudioToolbox/AudioToolbox.h>
+#import <fcntl.h>
+#import <unistd.h>
+#import <errno.h>
 #import <string.h>
 #import <stdlib.h>
 
 static NSString * const ZVModeKey = @"ZolaVoiceDurationMode";
 static NSString * const ZVCustomDurationKey = @"ZolaVoiceCustomDuration";
+static NSString *gPendingVoicePackAACPath;
+static double gPendingVoiceDuration;
+static unsigned long long gPendingVoiceSize;
+static BOOL gHasPendingVoicePack;
+static NSString *gPendingNativeAACDirectory;
+static NSString *gPendingNativeAACPath;
+static NSSet<NSString *> *gPendingAACBaselinePaths;
+static const void *ZVVoicePackDurationKey = &ZVVoicePackDurationKey;
+static const void *ZVVoicePackSizeKey = &ZVVoicePackSizeKey;
+static const void *ZVVoicePackItemKey = &ZVVoicePackItemKey;
 
 static NSString *ZVLibraryPath(void) {
     NSURL *base = [[[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory
@@ -615,9 +629,13 @@ static void ZVCreateAttachMediaView(id self, SEL cmd) {
 
 static const void *ZVCustomDurationAssociationKey = &ZVCustomDurationAssociationKey;
 static IMP ZVOriginalAudioItemDuration;
+static IMP ZVOriginalAudioItemFileSize;
+static IMP ZVOriginalAudioItemInit;
 static IMP ZVOriginalAddSendingVoice;
 static BOOL ZVRuntimeHooksStarted;
 static BOOL ZVDurationHookInstalled;
+static BOOL ZVFileSizeHookInstalled;
+static BOOL ZVAudioItemInitHookInstalled;
 static BOOL ZVAddVoiceHookInstalled;
 static BOOL ZVCreateAttachHookInstalled;
 static NSString *ZVLastRuntimeHookState;
@@ -789,121 +807,263 @@ static NSString *ZVCreateNativeMediaID(void) {
     return token;
 }
 
-static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatController, NSString **errorText) {
+static BOOL ZVConvertToAACADTS(NSURL *sourceURL, NSString *destinationPath, NSString **errorText) {
+    if (!sourceURL.isFileURL || ![[NSFileManager defaultManager] fileExistsAtPath:sourceURL.path]) {
+        if (errorText) *errorText = @"源音频文件不存在";
+        return NO;
+    }
+    [[NSFileManager defaultManager] removeItemAtPath:destinationPath error:nil];
+    ExtAudioFileRef input = NULL, output = NULL;
+    OSStatus status = ExtAudioFileOpenURL((__bridge CFURLRef)sourceURL, &input);
+    if (status != noErr || !input) {
+        if (errorText) *errorText = [NSString stringWithFormat:@"无法解码源音频（%d）", (int)status];
+        return NO;
+    }
+
+    AudioStreamBasicDescription pcm = {0};
+    pcm.mSampleRate = 44100.0; pcm.mFormatID = kAudioFormatLinearPCM;
+    pcm.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+    pcm.mBytesPerPacket = 2; pcm.mFramesPerPacket = 1; pcm.mBytesPerFrame = 2;
+    pcm.mChannelsPerFrame = 1; pcm.mBitsPerChannel = 16;
+    status = ExtAudioFileSetProperty(input, kExtAudioFileProperty_ClientDataFormat, sizeof(pcm), &pcm);
+    if (status != noErr) {
+        ExtAudioFileDispose(input);
+        if (errorText) *errorText = [NSString stringWithFormat:@"源音频重采样失败（%d）", (int)status];
+        return NO;
+    }
+
+    AudioStreamBasicDescription aac = {0};
+    aac.mSampleRate = 44100.0; aac.mFormatID = kAudioFormatMPEG4AAC; aac.mChannelsPerFrame = 1;
+    UInt32 formatSize = sizeof(aac);
+    status = AudioFormatGetProperty(kAudioFormatProperty_FormatInfo, 0, NULL, &formatSize, &aac);
+    if (status == noErr) {
+        status = ExtAudioFileCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:destinationPath],
+            kAudioFileAAC_ADTSType, &aac, NULL, kAudioFileFlags_EraseFile, &output);
+    }
+    if (status == noErr && output) {
+        status = ExtAudioFileSetProperty(output, kExtAudioFileProperty_ClientDataFormat, sizeof(pcm), &pcm);
+    }
+    if (status == noErr && output) {
+        AudioConverterRef converter = NULL;
+        UInt32 converterSize = sizeof(converter);
+        if (ExtAudioFileGetProperty(output, kExtAudioFileProperty_AudioConverter,
+                                    &converterSize, &converter) == noErr && converter) {
+            UInt32 bitRate = 64000;
+            AudioConverterSetProperty(converter, kAudioConverterEncodeBitRate, sizeof(bitRate), &bitRate);
+        }
+        const UInt32 frameCapacity = 4096;
+        int16_t *samples = (int16_t *)calloc(frameCapacity, sizeof(int16_t));
+        AudioBufferList *buffers = (AudioBufferList *)calloc(1, sizeof(AudioBufferList));
+        if (!samples || !buffers) {
+            status = memFullErr;
+        } else {
+            buffers->mNumberBuffers = 1;
+            buffers->mBuffers[0].mNumberChannels = 1;
+            buffers->mBuffers[0].mData = samples;
+            while (status == noErr) {
+                buffers->mBuffers[0].mDataByteSize = frameCapacity * sizeof(int16_t);
+                UInt32 frames = frameCapacity;
+                status = ExtAudioFileRead(input, &frames, buffers);
+                if (status != noErr || frames == 0) break;
+                status = ExtAudioFileWrite(output, frames, buffers);
+            }
+        }
+        free(samples); free(buffers);
+    }
+    if (output) ExtAudioFileDispose(output);
+    if (input) ExtAudioFileDispose(input);
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:destinationPath error:nil];
+    unsigned long long byteCount = [attrs[NSFileSize] unsignedLongLongValue];
+    if (status != noErr || byteCount == 0) {
+        [[NSFileManager defaultManager] removeItemAtPath:destinationPath error:nil];
+        if (errorText) *errorText = [NSString stringWithFormat:@"AAC-ADTS 转码失败（%d）", (int)status];
+        return NO;
+    }
+    return YES;
+}
+
+static NSSet<NSString *> *ZVCollectAACPaths(NSString *directory) {
+    NSArray *names = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:directory error:nil] ?: @[];
+    NSMutableSet *paths = [NSMutableSet set];
+    for (NSString *name in names) {
+        if ([name.pathExtension.lowercaseString isEqualToString:@"aac"])
+            [paths addObject:[directory stringByAppendingPathComponent:name]];
+    }
+    return paths;
+}
+
+static NSString *ZVCopyPendingNativePath(void) {
+    @synchronized ([NSObject class]) { return [gPendingNativeAACPath copy]; }
+}
+
+static BOOL ZVReplacePendingNativeAAC(NSString *nativePath, NSString *phase) {
+    if (!nativePath.length || ![nativePath.pathExtension.lowercaseString isEqualToString:@"aac"]) return NO;
+    NSString *sourcePath = nil, *nativeDirectory = nil;
+    unsigned long long expectedSize = 0;
+    @synchronized ([NSObject class]) {
+        if (!gHasPendingVoicePack || !gPendingVoicePackAACPath.length) return NO;
+        sourcePath = [gPendingVoicePackAACPath copy];
+        nativeDirectory = [gPendingNativeAACDirectory copy];
+        expectedSize = gPendingVoiceSize;
+    }
+    NSString *root = [nativeDirectory stringByStandardizingPath];
+    NSString *candidate = [nativePath stringByStandardizingPath];
+    if (!root.length || ![candidate hasPrefix:[root stringByAppendingString:@"/"]]) return NO;
+    NSData *audio = [NSData dataWithContentsOfFile:sourcePath options:NSDataReadingMappedIfSafe error:nil];
+    if (!audio.length || audio.length != expectedSize) return NO;
+
+    int fd = open(nativePath.fileSystemRepresentation, O_WRONLY);
+    if (fd < 0) {
+        ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][VoiceSend] replace_open_failed phase=%@ errno=%d", phase, errno]);
+        return NO;
+    }
+    BOOL ok = (ftruncate(fd, 0) == 0);
+    const uint8_t *bytes = (const uint8_t *)audio.bytes;
+    size_t offset = 0;
+    while (ok && offset < audio.length) {
+        ssize_t written = pwrite(fd, bytes + offset, audio.length - offset, (off_t)offset);
+        if (written <= 0) { ok = NO; break; }
+        offset += (size_t)written;
+    }
+    if (ok) ok = (ftruncate(fd, (off_t)audio.length) == 0);
+    if (ok) fsync(fd);
+    int savedErrno = errno;
+    close(fd);
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:nativePath error:nil];
+    unsigned long long actualSize = [attrs[NSFileSize] unsignedLongLongValue];
+    ok = ok && actualSize == expectedSize;
     ZVWriteVoiceEntryLog([NSString stringWithFormat:
-        @"[ZolaCN][VoiceSend][V7.3] stage=entry file=%@ fileURL=%d",
-        sourceURL.lastPathComponent ?: @"nil", sourceURL.isFileURL]);
+        @"[ZolaCN][VoiceSend] native_file_replace phase=%@ success=%d size=%llu expected=%llu path=%@ errno=%d",
+        phase, ok, actualSize, expectedSize, nativePath, savedErrno]);
+    return ok;
+}
+
+static NSString *ZVFindNewNativeAAC(void) {
+    NSString *directory = nil;
+    NSSet<NSString *> *baseline = nil;
+    @synchronized ([NSObject class]) {
+        if (!gHasPendingVoicePack) return nil;
+        if (gPendingNativeAACPath.length) return [gPendingNativeAACPath copy];
+        directory = [gPendingNativeAACDirectory copy];
+        baseline = [gPendingAACBaselinePaths copy] ?: [NSSet set];
+    }
+    NSArray *names = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:directory error:nil] ?: @[];
+    NSString *best = nil;
+    NSDate *bestDate = [NSDate distantPast];
+    for (NSString *name in names) {
+        if (![name.pathExtension.lowercaseString isEqualToString:@"aac"]) continue;
+        NSString *path = [directory stringByAppendingPathComponent:name];
+        if ([baseline containsObject:path]) continue;
+        NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+        if (![attrs[NSFileType] isEqualToString:NSFileTypeRegular]) continue;
+        NSDate *date = attrs[NSFileModificationDate] ?: [NSDate distantPast];
+        if (!best || [date compare:bestDate] == NSOrderedDescending) { best = path; bestDate = date; }
+    }
+    if (best) {
+        @synchronized ([NSObject class]) {
+            if (gHasPendingVoicePack && !gPendingNativeAACPath.length) gPendingNativeAACPath = [best copy];
+            best = [gPendingNativeAACPath copy];
+        }
+        ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][VoiceSend] native_recording_file_detected path=%@", best]);
+    }
+    return best;
+}
+
+static void ZVScheduleNativeAACDiscovery(NSUInteger attempt) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(attempt == 0 ? 10 : 20) * NSEC_PER_MSEC),
+                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        @autoreleasepool {
+            NSString *path = ZVFindNewNativeAAC();
+            if (path) { ZVReplacePendingNativeAAC(path, @"first_file_detection"); return; }
+            BOOL pending = NO;
+            @synchronized ([NSObject class]) { pending = gHasPendingVoicePack; }
+            if (pending && attempt < 100) ZVScheduleNativeAACDiscovery(attempt + 1);
+            else if (pending) ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend] native_aac_not_detected; pending_state_kept");
+        }
+    });
+}
+
+static IMP ZVOriginalVoiceBoardLongPress;
+static BOOL ZVVoiceBoardLongPressHookInstalled;
+static void ZVVoiceBoardLongPress(id self, SEL cmd, id recognizer) {
+    UIGestureRecognizerState state = UIGestureRecognizerStatePossible;
+    if ([recognizer isKindOfClass:UIGestureRecognizer.class]) state = [(UIGestureRecognizer *)recognizer state];
+    BOOL pending = NO;
+    @synchronized ([NSObject class]) { pending = gHasPendingVoicePack; }
+    if (ZVOriginalVoiceBoardLongPress)
+        ((void (*)(id, SEL, id))ZVOriginalVoiceBoardLongPress)(self, cmd, recognizer);
+    if (pending && state == UIGestureRecognizerStateBegan) {
+        ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend] native_recording_began; watching new AAC file");
+        ZVScheduleNativeAACDiscovery(0);
+    } else if (pending && (state == UIGestureRecognizerStateEnded ||
+                            state == UIGestureRecognizerStateCancelled ||
+                            state == UIGestureRecognizerStateFailed)) {
+        NSString *path = ZVFindNewNativeAAC();
+        if (path) ZVReplacePendingNativeAAC(path, @"gesture_ended_after_original");
+        else ZVScheduleNativeAACDiscovery(0);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_MSEC)),
+                       dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            NSString *finalPath = ZVCopyPendingNativePath();
+            if (finalPath) ZVReplacePendingNativeAAC(finalPath, @"gesture_terminal_flush");
+        });
+    }
+}
+
+static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatController, NSString **errorText) {
+    ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][VoiceSend] queue_entry file=%@",
+                          sourceURL.lastPathComponent ?: @"nil"]);
     if (!sourceURL.isFileURL || ![[NSFileManager defaultManager] fileExistsAtPath:sourceURL.path]) {
         if (errorText) *errorText = @"音频文件不存在";
         return NO;
     }
-
-    SEL addSelector = sel_registerName("addSendingVoiceWithAudioItem:fileLink:uploading:source:");
-    UIViewController *voiceSender = ZVResolveActiveVoiceSender(chatController);
-    if (!voiceSender) {
-        ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend][V7.3] stage=sender_resolution_failed");
-        if (errorText) *errorText = @"没有找到当前聊天的原生语音发送控制器。请确认仍停留在聊天窗口后重试。";
+    if (!ZVResolveActiveVoiceSender(chatController)) {
+        if (errorText) *errorText = @"没有找到当前聊天的原生语音控制器";
         return NO;
     }
-
-    Class itemClass = NSClassFromString(@"CommFeatureBase.AudioItem");
-    SEL initSelector = sel_registerName("initWithFileId:mediaId:clientId:filePath:");
-    if (!itemClass || ![itemClass instancesRespondToSelector:initSelector]) {
-        if (errorText) *errorText = @"Zalo 语音对象尚未加载，无法创建语音消息";
-        return NO;
+    @synchronized ([NSObject class]) {
+        if (gHasPendingVoicePack) {
+            if (errorText) *errorText = @"已有语音包正在等待原生录音发送，请先完成或取消";
+            return NO;
+        }
     }
-
-    NSError *fileError = nil;
-    NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:sourceURL.path error:&fileError];
-    unsigned long long fileSize = [attributes[NSFileSize] unsignedLongLongValue];
-    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:sourceURL options:nil];
-    NSTimeInterval duration = CMTimeGetSeconds(asset.duration);
-    if (fileSize == 0 || !isfinite(duration) || duration <= 0) {
-        if (errorText) *errorText = fileError.localizedDescription ?: @"音频文件为空或时长无法识别";
-        return NO;
-    }
-
     NSString *conversationDirectory = ZVFindNativeVoiceConversationDirectory();
     if (!conversationDirectory.length) {
-        if (errorText) *errorText = @"没有找到当前聊天的 Zalo 原生语音目录。请先在此聊天发送一条普通语音，再发送语音包。";
-        ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend][V7.3] stage=native_voice_directory_not_found");
+        if (errorText) *errorText = @"没有找到当前聊天的原生语音目录。请先在此聊天发送过一条原生语音。";
+        return NO;
+    }
+    NSString *nativeAACDirectory = [conversationDirectory stringByAppendingPathComponent:@"aac"];
+    NSError *directoryError = nil;
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:nativeAACDirectory
+                                   withIntermediateDirectories:YES attributes:nil error:&directoryError]) {
+        if (errorText) *errorText = directoryError.localizedDescription ?: @"无法访问原生 AAC 目录";
         return NO;
     }
 
-    NSString *extension = sourceURL.pathExtension.lowercaseString;
-    NSSet<NSString *> *supportedExtensions =
-        [NSSet setWithArray:@[@"aac", @"mp3", @"m4a", @"caf", @"wav", @"aif", @"aiff"]];
-    if (![supportedExtensions containsObject:extension]) {
-        if (errorText) *errorText = [NSString stringWithFormat:@"暂不支持 %@ 音频格式", extension.length ? extension : @"未知"];
+    NSString *preparedPath = [ZVLibraryPath() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@".zv-pending-%@.aac", NSUUID.UUID.UUIDString]];
+    if (!ZVConvertToAACADTS(sourceURL, preparedPath, errorText)) return NO;
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:preparedPath error:nil];
+    unsigned long long fileSize = [attrs[NSFileSize] unsignedLongLongValue];
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:preparedPath] options:nil];
+    NSTimeInterval duration = CMTimeGetSeconds(asset.duration);
+    if (!fileSize || !isfinite(duration) || duration <= 0) {
+        [[NSFileManager defaultManager] removeItemAtPath:preparedPath error:nil];
+        if (errorText) *errorText = @"AAC-ADTS 文件为空或时长无法识别";
         return NO;
     }
-
-    NSString *nativeCodecDirectory = [conversationDirectory stringByAppendingPathComponent:extension];
-    if (![[NSFileManager defaultManager] createDirectoryAtPath:nativeCodecDirectory
-                                   withIntermediateDirectories:YES attributes:nil error:&fileError]) {
-        if (errorText) *errorText = fileError.localizedDescription ?: @"无法创建 Zalo 原生语音目录";
-        return NO;
+    @synchronized ([NSObject class]) {
+        gPendingVoicePackAACPath = [preparedPath copy];
+        gPendingVoiceDuration = duration;
+        gPendingVoiceSize = fileSize;
+        gPendingNativeAACDirectory = [nativeAACDirectory copy];
+        gPendingNativeAACPath = nil;
+        gPendingAACBaselinePaths = ZVCollectAACPaths(nativeAACDirectory);
+        gHasPendingVoicePack = YES;
     }
-
-    // V7.2 normal-recording ID shapes: seconds fileId, millisecond clientId,
-    // and uppercase alphanumeric mediaId with a single underscore.
-    long long nowSeconds = (long long)llround([[NSDate date] timeIntervalSince1970]);
-    long long nowMilliseconds = (long long)llround([[NSDate date] timeIntervalSince1970] * 1000.0);
-    NSString *mediaID = ZVCreateNativeMediaID();
-    NSString *clientID = [NSString stringWithFormat:@"%lld", nowMilliseconds];
-    NSString *nativeFileName = [NSString stringWithFormat:@"%@.%@", mediaID, extension];
-    NSString *nativePath = [nativeCodecDirectory stringByAppendingPathComponent:nativeFileName];
-
-    if (![[NSFileManager defaultManager] copyItemAtURL:sourceURL
-                                                 toURL:[NSURL fileURLWithPath:nativePath]
-                                                 error:&fileError]) {
-        if (errorText) *errorText = fileError.localizedDescription ?: @"无法复制音频到 Zalo 原生语音目录";
-        return NO;
-    }
-
-    id allocated = [itemClass alloc];
-    id (*initializer)(id, SEL, long long, id, id, id) =
-        (id (*)(id, SEL, long long, id, id, id))[allocated methodForSelector:initSelector];
-    id audioItem = initializer ? initializer(allocated, initSelector, nowSeconds, mediaID, clientID, nativePath) : nil;
-    if (!audioItem) {
-        [[NSFileManager defaultManager] removeItemAtPath:nativePath error:nil];
-        if (errorText) *errorText = @"Zalo 未能创建原生 AudioItem";
-        return NO;
-    }
-
-    SEL setDurationSelector = sel_registerName("setDuration:");
-    if ([audioItem respondsToSelector:setDurationSelector]) {
-        void (*setDuration)(id, SEL, double) =
-            (void (*)(id, SEL, double))[audioItem methodForSelector:setDurationSelector];
-        if (setDuration) setDuration(audioItem, setDurationSelector, duration);
-    }
-    SEL setSizeSelector = sel_registerName("setFileSize:");
-    if ([audioItem respondsToSelector:setSizeSelector]) {
-        void (*setSize)(id, SEL, long long) =
-            (void (*)(id, SEL, long long))[audioItem methodForSelector:setSizeSelector];
-        if (setSize) setSize(audioItem, setSizeSelector, (long long)fileSize);
-    }
-
     ZVWriteVoiceEntryLog([NSString stringWithFormat:
-        @"[ZolaCN][VoiceSend][V7.3] stage=audio_item_ready fileId=%lld mediaId=%@ clientId=%@ filePath=%@ duration=%.3f size=%llu",
-        nowSeconds, mediaID, clientID, nativePath, duration, fileSize]);
-
-    // This API inserts the outgoing chat item; V7.2 proved it does not start
-    // VoiceContinuousUploader. No undocumented Swift ABI or fake mic stop is used.
-    void (*sendVoice)(id, SEL, id, id, BOOL, long long) =
-        (void (*)(id, SEL, id, id, BOOL, long long))[voiceSender methodForSelector:addSelector];
-    if (!sendVoice) {
-        [[NSFileManager defaultManager] removeItemAtPath:nativePath error:nil];
-        if (errorText) *errorText = [NSString stringWithFormat:@"找到控制器 %@，但无法取得原生语音发送方法",
-                                     NSStringFromClass(voiceSender.class)];
-        return NO;
-    }
-
-    ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend][V7.3] stage=native_send_begin fileLink=nil uploading=1 source=0 upload_start=not_exposed_by_add_voice_selector");
-    sendVoice(voiceSender, addSelector, audioItem, nil, YES, 0);
-    ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend][V7.3] stage=native_send_returned upload_start_confirmed=NO");
-    NSLog(@"[ZolaCN][Voice] voice pack inserted into native chat: %@ duration=%.3f size=%llu",
-          sourceURL.lastPathComponent, duration, fileSize);
+        @"[ZolaCN][VoiceSend] pending_ready path=%@ duration=%.6f size=%llu codec=AAC-ADTS sampleRate=44100 channels=1",
+        preparedPath, duration, fileSize]);
+    ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend] action_required=hold_and_release_native_zalo_mic_once");
     return YES;
 }
 
@@ -912,27 +1072,68 @@ static NSString *ZVFormatDuration(NSTimeInterval duration) {
     return [NSString stringWithFormat:@"%ld:%02ld", (long)(seconds / 60), (long)(seconds % 60)];
 }
 
-static double ZVAudioItemDuration(id self, SEL cmd) {
-    NSNumber *override = objc_getAssociatedObject(self, ZVCustomDurationAssociationKey);
-    if (override) return override.doubleValue;
-    return ((double (*)(id, SEL))ZVOriginalAudioItemDuration)(self, cmd);
+static double ZVAudioItemDuration(id self,SEL cmd) {
+    NSNumber *voiceDuration=objc_getAssociatedObject(self,ZVVoicePackDurationKey);
+    if(voiceDuration)return voiceDuration.doubleValue;
+    NSNumber *custom=objc_getAssociatedObject(self,ZVCustomDurationAssociationKey);
+    if(custom)return custom.doubleValue;
+    return ZVOriginalAudioItemDuration?((double(*)(id,SEL))ZVOriginalAudioItemDuration)(self,cmd):0.0;
 }
-
-static void ZVAddSendingVoice(id self, SEL cmd, id audioItem, id fileLink, BOOL uploading, long long source) {
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    if ([defaults integerForKey:ZVModeKey] == 1 && audioItem) {
-        double seconds = [defaults doubleForKey:ZVCustomDurationKey];
-        if (seconds <= 0) seconds = 5.0;
-        seconds = MIN(seconds, 3600.0);
-        objc_setAssociatedObject(audioItem, ZVCustomDurationAssociationKey,
-                                 @(seconds), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        NSLog(@"[ZolaCN][Voice] custom outgoing duration enabled: %ld sec", (long)seconds);
-    } else if (audioItem) {
-        objc_setAssociatedObject(audioItem, ZVCustomDurationAssociationKey, nil,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+static long long ZVAudioItemFileSize(id self,SEL cmd) {
+    NSNumber *size=objc_getAssociatedObject(self,ZVVoicePackSizeKey);
+    if(size)return size.longLongValue;
+    return ZVOriginalAudioItemFileSize?((long long(*)(id,SEL))ZVOriginalAudioItemFileSize)(self,cmd):0;
+}
+static id ZVAudioItemInit(id self,SEL cmd,long long fileID,id mediaID,id clientID,id filePath) {
+    NSString *path=[filePath isKindOfClass:NSString.class]?filePath:([filePath isKindOfClass:NSURL.class]?[(NSURL *)filePath path]:nil);
+    NSString *pendingPath=ZVCopyPendingNativePath();
+    if(!pendingPath.length&&path.length){
+        NSString *directory=nil;NSSet *baseline=nil;
+        @synchronized([NSObject class]){directory=[gPendingNativeAACDirectory copy];baseline=[gPendingAACBaselinePaths copy];}
+        NSString *root=[directory stringByStandardizingPath];
+        if(root.length&&[[path stringByStandardizingPath] hasPrefix:[root stringByAppendingString:@"/"]]&&
+           [path.pathExtension.lowercaseString isEqualToString:@"aac"]&&![baseline containsObject:path]){
+            @synchronized([NSObject class]){if(!gPendingNativeAACPath.length)gPendingNativeAACPath=[path copy];pendingPath=[gPendingNativeAACPath copy];}
+        }
     }
-    ((void (*)(id, SEL, id, id, BOOL, long long))ZVOriginalAddSendingVoice)
-        (self, cmd, audioItem, fileLink, uploading, source);
+    BOOL isPending=pendingPath.length&&path.length&&[[path stringByStandardizingPath] isEqualToString:[pendingPath stringByStandardizingPath]];
+    if(isPending)ZVReplacePendingNativeAAC(pendingPath,@"audio_item_init_before");
+    IMP original=ZVOriginalAudioItemInit;
+    id result=original?((id(*)(id,SEL,long long,id,id,id))original)(self,cmd,fileID,mediaID,clientID,filePath):nil;
+    id item=result?:self;
+    if(isPending&&item){
+        double duration=0;unsigned long long size=0;
+        @synchronized([NSObject class]){duration=gPendingVoiceDuration;size=gPendingVoiceSize;}
+        objc_setAssociatedObject(item,ZVVoicePackDurationKey,@(duration),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(item,ZVVoicePackSizeKey,@((long long)size),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(item,ZVVoicePackItemKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        SEL durationSetter=sel_registerName("setDuration:");
+        if([item respondsToSelector:durationSetter]){void(*fn)(id,SEL,double)=(void(*)(id,SEL,double))[item methodForSelector:durationSetter];if(fn)fn(item,durationSetter,duration);}
+        SEL sizeSetter=sel_registerName("setFileSize:");
+        if([item respondsToSelector:sizeSetter]){void(*fn)(id,SEL,long long)=(void(*)(id,SEL,long long))[item methodForSelector:sizeSetter];if(fn)fn(item,sizeSetter,(long long)size);}
+        ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][VoiceSend] audio_item_marked fileId=%lld duration=%.6f size=%llu path=%@",fileID,duration,size,path]);
+    }
+    return result;
+}
+static void ZVClearPendingVoicePackAfterUpload(void){
+    NSString *path=nil;
+    @synchronized([NSObject class]){
+        path=[gPendingVoicePackAACPath copy];gPendingVoicePackAACPath=nil;gPendingVoiceDuration=0;gPendingVoiceSize=0;
+        gHasPendingVoicePack=NO;gPendingNativeAACDirectory=nil;gPendingNativeAACPath=nil;gPendingAACBaselinePaths=nil;
+    }
+    if(path.length)[[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+}
+static void ZVAddSendingVoice(id self,SEL cmd,id audioItem,id fileLink,BOOL uploading,long long source){
+    BOOL isPack=[objc_getAssociatedObject(audioItem,ZVVoicePackItemKey) boolValue];
+    NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+    if(!isPack&&[defaults integerForKey:ZVModeKey]==1&&audioItem){
+        double seconds=[defaults doubleForKey:ZVCustomDurationKey];if(seconds<=0)seconds=5.0;seconds=MIN(seconds,3600.0);
+        objc_setAssociatedObject(audioItem,ZVCustomDurationAssociationKey,@(seconds),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        NSLog(@"[ZolaCN][Voice] custom outgoing duration enabled: %ld sec",(long)seconds);
+    }else if(audioItem&&!isPack)objc_setAssociatedObject(audioItem,ZVCustomDurationAssociationKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if(isPack&&fileLink)ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend] native_upload_link_received");
+    if(ZVOriginalAddSendingVoice)((void(*)(id,SEL,id,id,BOOL,long long))ZVOriginalAddSendingVoice)(self,cmd,audioItem,fileLink,uploading,source);
+    if(isPack&&fileLink){ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend] upload_callback_link_non_nil; pending_state_cleared");ZVClearPendingVoicePackAfterUpload();}
 }
 
 static void ZVHookDirectMethod(Class cls, SEL selector, IMP replacement, IMP *original) {
@@ -979,6 +1180,28 @@ static BOOL ZVInstallRuntimeHooksOnce(void) {
                            (IMP)ZVAudioItemDuration, &ZVOriginalAudioItemDuration);
         ZVDurationHookInstalled = (ZVOriginalAudioItemDuration != NULL);
     }
+    if (audioItem && !ZVFileSizeHookInstalled) {
+        Method sizeMethod=class_getInstanceMethod(audioItem,sel_registerName("fileSize"));
+        char *rt=sizeMethod?method_copyReturnType(sizeMethod):NULL;const char *ty=rt;
+        while(ty&&*ty&&strchr("rnNoORV",*ty))ty++;
+        BOOL valid=ty&&(*ty=='q'||*ty=='Q'||*ty=='l'||*ty=='L');free(rt);
+        if(valid){ZVHookDirectMethod(audioItem,sel_registerName("fileSize"),(IMP)ZVAudioItemFileSize,&ZVOriginalAudioItemFileSize);ZVFileSizeHookInstalled=ZVOriginalAudioItemFileSize!=NULL;}
+    }
+    if (audioItem && !ZVAudioItemInitHookInstalled) {
+        ZVHookDirectMethod(audioItem,sel_registerName("initWithFileId:mediaId:clientId:filePath:"),(IMP)ZVAudioItemInit,&ZVOriginalAudioItemInit);
+        ZVAudioItemInitHookInstalled=ZVOriginalAudioItemInit!=NULL;
+    }
+    Class boardClass=NSClassFromString(@"CommFeatureBusiness.VoiceBoardView");
+    if(boardClass&&!ZVVoiceBoardLongPressHookInstalled){
+        SEL selector=sel_registerName("middleButtonLongPressedWithRecognizer:");
+        Method method=class_getInstanceMethod(boardClass,selector);const char *encoding=method?method_getTypeEncoding(method):NULL;
+        if(method&&encoding&&strcmp(encoding,"v24@0:8@16")==0){
+            unsigned int count=0;Method *methods=class_copyMethodList(boardClass,&count);Method direct=NULL;
+            for(unsigned int i=0;i<count;i++){if(method_getName(methods[i])==selector){direct=methods[i];break;}}
+            free(methods);
+            if(direct){ZVOriginalVoiceBoardLongPress=method_setImplementation(direct,(IMP)ZVVoiceBoardLongPress);ZVVoiceBoardLongPressHookInstalled=ZVOriginalVoiceBoardLongPress!=NULL;}
+        }
+    }
 
     if (baseChat && !ZVAddVoiceHookInstalled) {
         ZVHookDirectMethod(baseChat,
@@ -1005,9 +1228,10 @@ static BOOL ZVInstallRuntimeHooksOnce(void) {
     }
 
     NSString *state = [NSString stringWithFormat:
-        @"Grid=%d Cell=%d gridHook=%d cellHook=%d Base=%d addVoice=%d duration=%d create=%d",
+        @"Grid=%d Cell=%d gridHook=%d cellHook=%d Base=%d addVoice=%d duration=%d size=%d itemInit=%d boardLongPress=%d create=%d",
         gridClass != Nil, cellClass != Nil, ZVGridLayoutHookInstalled, ZVCellLayoutHookInstalled,
-        baseChat != Nil, ZVAddVoiceHookInstalled, ZVDurationHookInstalled, ZVCreateAttachHookInstalled];
+        baseChat != Nil, ZVAddVoiceHookInstalled, ZVDurationHookInstalled, ZVFileSizeHookInstalled,
+        ZVAudioItemInitHookInstalled, ZVVoiceBoardLongPressHookInstalled, ZVCreateAttachHookInstalled];
     if (![state isEqualToString:ZVLastRuntimeHookState]) {
         ZVLastRuntimeHookState = state;
         NSLog(@"[ZolaCN][VoiceEntry] runtime hook state changed: %@", state);
@@ -1296,8 +1520,8 @@ void ZVInstall(void) {
         [actions addAction:[UIAlertAction actionWithTitle:@"发送语音" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
             NSString *errorText = nil;
             if (ZVSendVoicePackFile(url, _voiceSendController, &errorText)) {
-                UIAlertController *result = [UIAlertController alertControllerWithTitle:@"已提交发送"
-                                                                                 message:@"已调用 Zalo 原生语音发送入口。请确认聊天中出现语音气泡且上传完成。"
+                UIAlertController *result = [UIAlertController alertControllerWithTitle:@"语音包已排队"
+                                                                                 message:@"已转为 44.1kHz 单声道 AAC-ADTS。请在当前聊天按住 Zalo 原生麦克风并松开一次；插件会在新录音文件创建时替换音频，并等待原生上传完成。"
                                                                           preferredStyle:UIAlertControllerStyleAlert];
                 [result addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
                 [self presentViewController:result animated:YES completion:nil];
