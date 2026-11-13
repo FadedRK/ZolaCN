@@ -799,7 +799,7 @@ static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatControll
     }
     ZVWriteVoiceEntryLog([NSString stringWithFormat:
         @"[ZolaCN][VoiceSend][V7] stage=audio_item_ready class=%@ duration=%.3f size=%llu",
-        NSStringFromClass(audioItem.class), duration, fileSize]);
+        NSStringFromClass([audioItem class]), duration, fileSize]);
 
     // Reuse the exact native BaseChatTVC voice-send entry observed in the V5 trace.
     void (*sendVoice)(id, SEL, id, id, BOOL, long long) =
