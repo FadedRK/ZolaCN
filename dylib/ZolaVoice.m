@@ -5,6 +5,7 @@
 #import <objc/runtime.h>
 #import <zlib.h>
 #import <string.h>
+#import <stdlib.h>
 
 static NSString * const ZVModeKey = @"ZolaVoiceDurationMode";
 static NSString * const ZVCustomDurationKey = @"ZolaVoiceCustomDuration";
@@ -721,24 +722,89 @@ static UIViewController *ZVResolveActiveVoiceSender(UIViewController *preferredC
     return nil;
 }
 
+static BOOL ZVIsNumericDirectoryName(NSString *name) {
+    if (name.length == 0) return NO;
+    NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
+    return [name rangeOfCharacterFromSet:nonDigits].location == NSNotFound;
+}
+
+// Discover the active chat's native media directory from a regular voice
+// recording in the same conversation. Observed layout:
+// Documents/<account>/<conversation>/<codec>/<mediaId>.<codec>.
+static NSString *ZVFindNativeVoiceConversationDirectory(void) {
+    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
+                                                               NSUserDomainMask, YES).firstObject;
+    if (!documents.length) return nil;
+
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSArray<NSString *> *firstLevel = [fm contentsOfDirectoryAtPath:documents error:nil];
+    NSDate *newestDate = [NSDate distantPast];
+    NSString *bestConversationDirectory = nil;
+    NSArray<NSString *> *codecFolders = @[@"aac", @"mp3", @"m4a", @"caf", @"wav", @"aif", @"aiff"];
+
+    for (NSString *accountName in firstLevel) {
+        if (!ZVIsNumericDirectoryName(accountName)) continue;
+        NSString *accountPath = [documents stringByAppendingPathComponent:accountName];
+        BOOL accountIsDirectory = NO;
+        if (![fm fileExistsAtPath:accountPath isDirectory:&accountIsDirectory] || !accountIsDirectory) continue;
+
+        NSArray<NSString *> *conversations = [fm contentsOfDirectoryAtPath:accountPath error:nil];
+        for (NSString *conversationName in conversations) {
+            if (!ZVIsNumericDirectoryName(conversationName)) continue;
+            NSString *conversationPath = [accountPath stringByAppendingPathComponent:conversationName];
+            BOOL conversationIsDirectory = NO;
+            if (![fm fileExistsAtPath:conversationPath isDirectory:&conversationIsDirectory] || !conversationIsDirectory) continue;
+
+            for (NSString *codec in codecFolders) {
+                NSString *codecPath = [conversationPath stringByAppendingPathComponent:codec];
+                BOOL codecIsDirectory = NO;
+                if (![fm fileExistsAtPath:codecPath isDirectory:&codecIsDirectory] || !codecIsDirectory) continue;
+                NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:codecPath error:nil];
+                for (NSString *fileName in files) {
+                    NSString *extension = fileName.pathExtension.lowercaseString;
+                    if (![codecFolders containsObject:extension]) continue;
+                    NSString *filePath = [codecPath stringByAppendingPathComponent:fileName];
+                    NSDictionary *attrs = [fm attributesOfItemAtPath:filePath error:nil];
+                    if (![attrs[NSFileType] isEqualToString:NSFileTypeRegular]) continue;
+                    NSDate *modified = attrs[NSFileModificationDate] ?: [NSDate distantPast];
+                    if ([modified compare:newestDate] == NSOrderedDescending) {
+                        newestDate = modified;
+                        bestConversationDirectory = conversationPath;
+                    }
+                }
+            }
+        }
+    }
+    return bestConversationDirectory;
+}
+
+static NSString *ZVCreateNativeMediaID(void) {
+    static NSString *alphabet = @"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    NSMutableString *token = [NSMutableString stringWithCapacity:17];
+    for (NSUInteger i = 0; i < 9; i++)
+        [token appendFormat:@"%C", [alphabet characterAtIndex:arc4random_uniform((uint32_t)alphabet.length)]];
+    [token appendString:@"_"];
+    for (NSUInteger i = 0; i < 7; i++)
+        [token appendFormat:@"%C", [alphabet characterAtIndex:arc4random_uniform((uint32_t)alphabet.length)]];
+    return token;
+}
+
 static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatController, NSString **errorText) {
     ZVWriteVoiceEntryLog([NSString stringWithFormat:
-        @"[ZolaCN][VoiceSend][V7.1] stage=entry file=%@ fileURL=%d",
+        @"[ZolaCN][VoiceSend][V7.3] stage=entry file=%@ fileURL=%d",
         sourceURL.lastPathComponent ?: @"nil", sourceURL.isFileURL]);
     if (!sourceURL.isFileURL || ![[NSFileManager defaultManager] fileExistsAtPath:sourceURL.path]) {
         if (errorText) *errorText = @"音频文件不存在";
         return NO;
     }
+
     SEL addSelector = sel_registerName("addSendingVoiceWithAudioItem:fileLink:uploading:source:");
     UIViewController *voiceSender = ZVResolveActiveVoiceSender(chatController);
     if (!voiceSender) {
-        ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend][V7.1] stage=sender_resolution_failed");
-        if (errorText) *errorText = @"没有找到当前聊天的原生语音发送控制器。请确认仍停留在聊天窗口后重试；诊断信息已写入 Documents/zolacn_voice_diag.log。";
+        ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend][V7.3] stage=sender_resolution_failed");
+        if (errorText) *errorText = @"没有找到当前聊天的原生语音发送控制器。请确认仍停留在聊天窗口后重试。";
         return NO;
     }
-    ZVWriteVoiceEntryLog([NSString stringWithFormat:
-        @"[ZolaCN][VoiceSend][V7.1] stage=sender_resolved class=%@",
-        NSStringFromClass(voiceSender.class)]);
 
     Class itemClass = NSClassFromString(@"CommFeatureBase.AudioItem");
     SEL initSelector = sel_registerName("initWithFileId:mediaId:clientId:filePath:");
@@ -757,30 +823,50 @@ static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatControll
         return NO;
     }
 
-    NSString *stagingFolder = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ZolaCNVoiceSend"];
-    if (![[NSFileManager defaultManager] createDirectoryAtPath:stagingFolder
-                                   withIntermediateDirectories:YES attributes:nil error:&fileError]) {
-        if (errorText) *errorText = fileError.localizedDescription ?: @"无法创建语音发送暂存目录";
-        return NO;
-    }
-    NSString *stagedName = [NSString stringWithFormat:@"%@.%@", NSUUID.UUID.UUIDString, sourceURL.pathExtension.lowercaseString];
-    NSString *stagedPath = [stagingFolder stringByAppendingPathComponent:stagedName];
-    if (![[NSFileManager defaultManager] copyItemAtURL:sourceURL
-                                                 toURL:[NSURL fileURLWithPath:stagedPath]
-                                                 error:&fileError]) {
-        if (errorText) *errorText = fileError.localizedDescription ?: @"无法准备待发送音频";
+    NSString *conversationDirectory = ZVFindNativeVoiceConversationDirectory();
+    if (!conversationDirectory.length) {
+        if (errorText) *errorText = @"没有找到当前聊天的 Zalo 原生语音目录。请先在此聊天发送一条普通语音，再发送语音包。";
+        ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend][V7.3] stage=native_voice_directory_not_found");
         return NO;
     }
 
-    long long fileID = (long long)llround([[NSDate date] timeIntervalSince1970] * 1000000.0);
-    NSString *mediaID = NSUUID.UUID.UUIDString;
-    NSString *clientID = NSUUID.UUID.UUIDString;
+    NSString *extension = sourceURL.pathExtension.lowercaseString;
+    NSSet<NSString *> *supportedExtensions =
+        [NSSet setWithArray:@[@"aac", @"mp3", @"m4a", @"caf", @"wav", @"aif", @"aiff"]];
+    if (![supportedExtensions containsObject:extension]) {
+        if (errorText) *errorText = [NSString stringWithFormat:@"暂不支持 %@ 音频格式", extension.length ? extension : @"未知"];
+        return NO;
+    }
+
+    NSString *nativeCodecDirectory = [conversationDirectory stringByAppendingPathComponent:extension];
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:nativeCodecDirectory
+                                   withIntermediateDirectories:YES attributes:nil error:&fileError]) {
+        if (errorText) *errorText = fileError.localizedDescription ?: @"无法创建 Zalo 原生语音目录";
+        return NO;
+    }
+
+    // V7.2 normal-recording ID shapes: seconds fileId, millisecond clientId,
+    // and uppercase alphanumeric mediaId with a single underscore.
+    long long nowSeconds = (long long)llround([[NSDate date] timeIntervalSince1970]);
+    long long nowMilliseconds = (long long)llround([[NSDate date] timeIntervalSince1970] * 1000.0);
+    NSString *mediaID = ZVCreateNativeMediaID();
+    NSString *clientID = [NSString stringWithFormat:@"%lld", nowMilliseconds];
+    NSString *nativeFileName = [NSString stringWithFormat:@"%@.%@", mediaID, extension];
+    NSString *nativePath = [nativeCodecDirectory stringByAppendingPathComponent:nativeFileName];
+
+    if (![[NSFileManager defaultManager] copyItemAtURL:sourceURL
+                                                 toURL:[NSURL fileURLWithPath:nativePath]
+                                                 error:&fileError]) {
+        if (errorText) *errorText = fileError.localizedDescription ?: @"无法复制音频到 Zalo 原生语音目录";
+        return NO;
+    }
+
     id allocated = [itemClass alloc];
     id (*initializer)(id, SEL, long long, id, id, id) =
         (id (*)(id, SEL, long long, id, id, id))[allocated methodForSelector:initSelector];
-    id audioItem = initializer ? initializer(allocated, initSelector, fileID, mediaID, clientID, stagedPath) : nil;
+    id audioItem = initializer ? initializer(allocated, initSelector, nowSeconds, mediaID, clientID, nativePath) : nil;
     if (!audioItem) {
-        [[NSFileManager defaultManager] removeItemAtPath:stagedPath error:nil];
+        [[NSFileManager defaultManager] removeItemAtPath:nativePath error:nil];
         if (errorText) *errorText = @"Zalo 未能创建原生 AudioItem";
         return NO;
     }
@@ -797,23 +883,26 @@ static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatControll
             (void (*)(id, SEL, long long))[audioItem methodForSelector:setSizeSelector];
         if (setSize) setSize(audioItem, setSizeSelector, (long long)fileSize);
     }
-    ZVWriteVoiceEntryLog([NSString stringWithFormat:
-        @"[ZolaCN][VoiceSend][V7.1] stage=audio_item_ready class=%@ duration=%.3f size=%llu",
-        NSStringFromClass([audioItem class]), duration, fileSize]);
 
-    // Reuse the exact native BaseChatTVC voice-send entry observed in the V5 trace.
+    ZVWriteVoiceEntryLog([NSString stringWithFormat:
+        @"[ZolaCN][VoiceSend][V7.3] stage=audio_item_ready fileId=%lld mediaId=%@ clientId=%@ filePath=%@ duration=%.3f size=%llu",
+        nowSeconds, mediaID, clientID, nativePath, duration, fileSize]);
+
+    // This API inserts the outgoing chat item; V7.2 proved it does not start
+    // VoiceContinuousUploader. No undocumented Swift ABI or fake mic stop is used.
     void (*sendVoice)(id, SEL, id, id, BOOL, long long) =
         (void (*)(id, SEL, id, id, BOOL, long long))[voiceSender methodForSelector:addSelector];
     if (!sendVoice) {
-        [[NSFileManager defaultManager] removeItemAtPath:stagedPath error:nil];
+        [[NSFileManager defaultManager] removeItemAtPath:nativePath error:nil];
         if (errorText) *errorText = [NSString stringWithFormat:@"找到控制器 %@，但无法取得原生语音发送方法",
                                      NSStringFromClass(voiceSender.class)];
         return NO;
     }
-    ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend][V7.1] stage=native_send_begin fileLink=nil uploading=1 source=0");
+
+    ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend][V7.3] stage=native_send_begin fileLink=nil uploading=1 source=0 upload_start=not_exposed_by_add_voice_selector");
     sendVoice(voiceSender, addSelector, audioItem, nil, YES, 0);
-    ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend][V7.1] stage=native_send_returned");
-    NSLog(@"[ZolaCN][Voice] voice pack submitted to native sender: %@ duration=%.3f size=%llu",
+    ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend][V7.3] stage=native_send_returned upload_start_confirmed=NO");
+    NSLog(@"[ZolaCN][Voice] voice pack inserted into native chat: %@ duration=%.3f size=%llu",
           sourceURL.lastPathComponent, duration, fileSize);
     return YES;
 }
