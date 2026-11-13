@@ -23,6 +23,8 @@ static NSSet<NSString *> *gPendingAACBaselinePaths;
 static const void *ZVVoicePackDurationKey = &ZVVoicePackDurationKey;
 static const void *ZVVoicePackSizeKey = &ZVVoicePackSizeKey;
 static const void *ZVVoicePackItemKey = &ZVVoicePackItemKey;
+// The queued payload is a completed 44.1 kHz mono AAC/ADTS asset; only a native
+// VoiceBoard recording session may move it into Zalo's actual upload lifecycle.
 
 static NSString *ZVLibraryPath(void) {
     NSURL *base = [[[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory
