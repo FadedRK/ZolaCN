@@ -523,77 +523,19 @@ static NSString *ZVTHookKey(Class cls, SEL selector, BOOL classMethod) {
 }
 
 static void ZVTInstallLifecycleHooksForClass(Class targetClass, BOOL classMethod) {
-    Class dispatchClass = classMethod ? object_getClass(targetClass) : targetClass;
-    if (!dispatchClass) return;
+    if (!targetClass) return;
 
-    NSMutableSet<NSString *> *candidateNames = [NSMutableSet set];
-    for (Class current = dispatchClass; current; current = class_getSuperclass(current)) {
-        unsigned int count = 0;
-        Method *methods = class_copyMethodList(current, &count);
-        for (unsigned int i = 0; i < count; i++) {
-            NSString *name = NSStringFromSelector(method_getName(methods[i]));
-            if (ZVTSelectorLooksLikeLifecycle(name)) [candidateNames addObject:name];
-        }
-        free(methods);
+    // Stability mode: enumerate and log real methods, but do not swizzle uploader
+    // internals until their exact runtime signatures have been reviewed against a
+    // crash-free baseline. Core chat voice hooks remain enabled separately.
+    NSString *key = [NSString stringWithFormat:@"lifecycle-disabled|%p|%@",
+                     targetClass, classMethod ? @"class" : @"instance"];
+    @synchronized (ZVTHookedMethods()) {
+        if ([ZVTHookedMethods() containsObject:key]) return;
+        [ZVTHookedMethods() addObject:key];
     }
-
-    for (NSString *name in candidateNames) {
-        SEL selector = NSSelectorFromString(name);
-        NSString *key = ZVTHookKey(targetClass, selector, classMethod);
-        @synchronized (ZVTHookedMethods()) {
-            if ([ZVTHookedMethods() containsObject:key]) continue;
-        }
-        Method resolved = class_getInstanceMethod(dispatchClass, selector);
-        if (!resolved) continue;
-        NSUInteger explicitCount = 0;
-        BOOL objectReturn = NO, voidReturn = NO;
-        if (!ZVTMethodHasSafeForwardingSignature(resolved, &explicitCount, &objectReturn, &voidReturn)) {
-            ZVTLog([NSString stringWithFormat:@"HOOK_SKIPPED_UNSAFE %@ %@%@ type=%s",
-                    NSStringFromClass(targetClass), classMethod ? @"+" : @"-", name,
-                    method_getTypeEncoding(resolved) ?: "?"]);
-            continue;
-        }
-        IMP wrapper = ZVTWrapperForMethod(resolved, selector);
-        if (!wrapper) continue;
-
-        ZVTProbeRecord *record = [ZVTProbeRecord new];
-        record.targetClass = targetClass;
-        record.selector = selector;
-        record.method = resolved;
-        record.classMethod = classMethod;
-        record.explicitArgumentCount = explicitCount;
-        record.objectReturn = objectReturn;
-        record.voidReturn = voidReturn;
-        record.typeEncoding = [NSString stringWithUTF8String:method_getTypeEncoding(resolved) ?: ""];
-        record.originalIMP = method_getImplementation(resolved);
-        if (!record.originalIMP) continue;
-
-        @synchronized (ZVTProbeRecords()) { [ZVTProbeRecords() addObject:record]; }
-        Method direct = ZVTFindDirectMethod(dispatchClass, selector);
-        BOOL installed = NO;
-        if (direct) {
-            record.originalIMP = method_setImplementation(direct, wrapper);
-            installed = record.originalIMP != NULL;
-        } else {
-            installed = class_addMethod(dispatchClass, selector, wrapper, method_getTypeEncoding(resolved));
-            if (!installed) {
-                direct = ZVTFindDirectMethod(dispatchClass, selector);
-                if (direct) {
-                    record.originalIMP = method_setImplementation(direct, wrapper);
-                    installed = record.originalIMP != NULL;
-                }
-            }
-        }
-        if (!installed) {
-            @synchronized (ZVTProbeRecords()) { [ZVTProbeRecords() removeObject:record]; }
-            ZVTLog([NSString stringWithFormat:@"HOOK_FAILED %@ %@%@", NSStringFromClass(targetClass), classMethod ? @"+" : @"-", name]);
-        } else {
-            @synchronized (ZVTHookedMethods()) { [ZVTHookedMethods() addObject:key]; }
-            ZVTLog([NSString stringWithFormat:@"HOOK_READY %@ %@%@ type=%@ args=%lu",
-                    NSStringFromClass(targetClass), classMethod ? @"+" : @"-", name,
-                    record.typeEncoding, (unsigned long)explicitCount]);
-        }
-    }
+    ZVTLog([NSString stringWithFormat:@"LIFECYCLE_HOOKS_DISABLED class=%@ kind=%@ reason=stability_baseline_methods_dump_only",
+            NSStringFromClass(targetClass), classMethod ? @"class" : @"instance"]);
 }
 
 #pragma mark - Core chat voice probes
@@ -639,13 +581,27 @@ static void ZVTAddVoice(id self, SEL cmd, id item, id link, BOOL uploading, long
 
     ZVTDescribeObject(item, @"audioItem", NO);
     ZVTDescribeObject(link, @"fileLink", NO);
-    ((void (*)(id, SEL, id, id, BOOL, long long))OAddVoice)(self, cmd, item, link, uploading, source);
+    IMP original = OAddVoice;
+    if (!original) {
+        ZVTEvent(@"ADD_VOICE_ABORT original_IMP_missing");
+        return;
+    }
+    ZVTEvent(@"ADD_VOICE_ORIGINAL_CALL_BEGIN");
+    ((void (*)(id, SEL, id, id, BOOL, long long))original)(self, cmd, item, link, uploading, source);
+    ZVTEvent(@"ADD_VOICE_ORIGINAL_CALL_END");
 }
 
 static void ZVTUpdateVoice(id self, SEL cmd, id entity) {
     ZVTEvent([NSString stringWithFormat:@"UPDATE_VOICE_UI entityClass=%@ entityPointer=%p", ZVTClassName(entity), entity]);
     ZVTDescribeObject(entity, @"ChatEntity", YES);
-    ((void (*)(id, SEL, id))OUpdateVoice)(self, cmd, entity);
+    IMP original = OUpdateVoice;
+    if (!original) {
+        ZVTEvent(@"UPDATE_VOICE_ABORT original_IMP_missing");
+        return;
+    }
+    ZVTEvent(@"UPDATE_VOICE_ORIGINAL_CALL_BEGIN");
+    ((void (*)(id, SEL, id))original)(self, cmd, entity);
+    ZVTEvent(@"UPDATE_VOICE_ORIGINAL_CALL_END");
 }
 
 static void ZVTInstallCoreHook(Class chatClass, SEL selector, IMP replacement, IMP *original,
