@@ -780,11 +780,11 @@ static NSString *ZVFindNativeVoiceConversationDirectory(void) {
 
 static NSString *ZVCreateNativeMediaID(void) {
     static NSString *alphabet = @"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    NSMutableString *token = [NSMutableString stringWithCapacity:17];
+    NSMutableString *token = [NSMutableString stringWithCapacity:16];
     for (NSUInteger i = 0; i < 9; i++)
         [token appendFormat:@"%C", [alphabet characterAtIndex:arc4random_uniform((uint32_t)alphabet.length)]];
     [token appendString:@"_"];
-    for (NSUInteger i = 0; i < 7; i++)
+    for (NSUInteger i = 0; i < 6; i++)
         [token appendFormat:@"%C", [alphabet characterAtIndex:arc4random_uniform((uint32_t)alphabet.length)]];
     return token;
 }
