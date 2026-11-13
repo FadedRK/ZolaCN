@@ -24,7 +24,7 @@ static IMP OAudioItemInit;
 static IMP OVoiceBoardStartRecord;
 static BOOL ZVTAudioItemInitHooked;
 static BOOL ZVTViewModelStartHooked;
-static BOOL ZVTFirstChunkStackLogged;
+static BOOL __attribute__((unused)) ZVTFirstChunkStackLogged;
 static IMP OOnVoiceSendGetter;
 static IMP OSessionConfigurationInit;
 static BOOL ZVTOnVoiceSendGetterHooked;
@@ -66,7 +66,7 @@ static NSMutableArray<ZVTProbeRecord *> *ZVTProbeRecords(void) {
     return records;
 }
 
-static NSMutableSet<NSString *> *ZVTLoggedClasses(void) {
+static __attribute__((unused)) NSMutableSet<NSString *> *ZVTLoggedClasses(void) {
     static NSMutableSet<NSString *> *set;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{ set = [NSMutableSet set]; });
@@ -187,7 +187,7 @@ static const char *ZVTUnqualifiedType(const char *type) {
     return type;
 }
 
-static void ZVTDescribeObject(id object, NSString *label, BOOL entityFilter) {
+static __attribute__((unused)) void ZVTDescribeObject(id object, NSString *label, BOOL entityFilter) {
     if (!object) {
         ZVTEvent([NSString stringWithFormat:@"OBJECT %@ class=nil pointer=nil metadata_only=YES", label]);
         return;
@@ -234,7 +234,7 @@ static void ZVTDescribeObject(id object, NSString *label, BOOL entityFilter) {
 }
 #pragma mark - Runtime class and method discovery
 
-static BOOL ZVTIsTargetClassName(NSString *name) {
+static __attribute__((unused)) BOOL ZVTIsTargetClassName(NSString *name) {
     NSString *lower = name.lowercaseString;
     BOOL voiceUpload = [lower containsString:@"voice"] && [lower containsString:@"upload"];
     BOOL audioUpload = [lower containsString:@"audio"] && [lower containsString:@"upload"];
@@ -266,7 +266,7 @@ static Method ZVTFindDirectMethod(Class cls, SEL selector) {
     return found;
 }
 
-static void ZVTDumpMethods(Class targetClass, BOOL classMethods) {
+static __attribute__((unused)) void ZVTDumpMethods(Class targetClass, BOOL classMethods) {
     Class level = classMethods ? object_getClass(targetClass) : targetClass;
     for (Class current = level; current; current = class_getSuperclass(current)) {
         unsigned int count = 0;
@@ -282,7 +282,7 @@ static void ZVTDumpMethods(Class targetClass, BOOL classMethods) {
     }
 }
 
-static BOOL ZVTIsDeepDumpClassName(NSString *name) {
+static __attribute__((unused)) BOOL ZVTIsDeepDumpClassName(NSString *name) {
     NSArray<NSString *> *suffixes = @[
         @"VoiceBoardViewModel",
         @"VoiceBoardViewModelActions",
@@ -294,7 +294,7 @@ static BOOL ZVTIsDeepDumpClassName(NSString *name) {
     return NO;
 }
 
-static void ZVTDumpClassLayout(Class targetClass) {
+static __attribute__((unused)) void ZVTDumpClassLayout(Class targetClass) {
     if (!targetClass) return;
     for (Class current = targetClass; current && current != NSObject.class;
          current = class_getSuperclass(current)) {
@@ -529,7 +529,7 @@ static NSString * __attribute__((unused)) ZVTHookKey(Class cls, SEL selector, BO
             classMethod ? @"+" : @"-", NSStringFromSelector(selector)];
 }
 
-static void ZVTInstallLifecycleHooksForClass(Class targetClass, BOOL classMethod) {
+static __attribute__((unused)) void ZVTInstallLifecycleHooksForClass(Class targetClass, BOOL classMethod) {
     if (!targetClass) return;
 
     // Stability mode: enumerate and log real methods, but do not swizzle uploader
