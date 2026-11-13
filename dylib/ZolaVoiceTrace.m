@@ -11,7 +11,7 @@
 #import <string.h>
 #import <dlfcn.h>
 
-#pragma mark - V7.4 trace state
+#pragma mark - V7.5 trace state
 
 static dispatch_queue_t ZVTQueue;
 static BOOL ZVTInstalled;
@@ -46,6 +46,7 @@ static IMP ZVTAudioFileCreateOriginal;
 static IMP ZVTExtAudioFileCreateOriginal;
 static void ZVTLogVoiceDocumentsSnapshot(NSString *reason);
 static void ZVTDumpInstanceIvars(id object, NSString *label);
+static void ZVTLogCallStack8(NSString *label);
 static IMP OUIApplicationSendAction;
 static BOOL ZVTUIApplicationSendActionHooked;
 static BOOL ZVTSessionConfigurationInitHooked;
@@ -891,6 +892,7 @@ static void ZVTInstallVoiceBoardViewHooks(Class cls) {
     };
     NSUInteger installed = 0;
     for (NSUInteger i = 0; i < 4; i++) {
+        if (ZVTOriginalVoiceBoardViewMethods[i]) { installed++; continue; }
         SEL selector = sel_registerName(names[i]);
         Method method = ZVTFindDirectMethod(cls, selector);
         const char *encoding = method ? method_getTypeEncoding(method) : NULL;
@@ -2084,7 +2086,7 @@ void ZVTInstall(void) {
         if (ZVTInstalled) return;
         ZVTInstalled = YES;
     }
-    ZVTQueue = dispatch_queue_create("com.fadedrk.zolacn.voicetrace.v7_4", DISPATCH_QUEUE_SERIAL);
+    ZVTQueue = dispatch_queue_create("com.fadedrk.zolacn.voicetrace.v7_5", DISPATCH_QUEUE_SERIAL);
     ZVTLog(@"START version=7.5 swift_ivar_span_inference_nested_object_class_scan_action_block_wrappers_voiceboard_button_hooks_aac_creation_trace timezone=local log=Library/Caches/ZolaVoiceTrace-v7.5.log");
     ZVTScanAttempt(0);
 }
