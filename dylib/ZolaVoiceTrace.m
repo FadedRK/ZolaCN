@@ -1295,6 +1295,88 @@ static NSMutableSet<NSString *> *ZVTLoggedNestedObjectSlots(void) {
 
 static void ZVTDumpInstanceIvarsInternal(id object, NSString *label, NSUInteger nestedDepth);
 
+static void ZVTInspectDictionaryStorageValues(id storage, NSString *label, NSUInteger nestedDepth) {
+    if (!storage || nestedDepth == 0) return;
+    NSString *className = ZVTClassName(storage);
+    if (![className containsString:@"DictionaryStorage"]) return;
+
+    SEL keyEnumeratorSelector = sel_registerName("keyEnumerator");
+    SEL objectForKeySelector = sel_registerName("objectForKey:");
+    Method keyEnumeratorMethod = class_getInstanceMethod(object_getClass(storage), keyEnumeratorSelector);
+    Method objectForKeyMethod = class_getInstanceMethod(object_getClass(storage), objectForKeySelector);
+    if (!keyEnumeratorMethod || method_getNumberOfArguments(keyEnumeratorMethod) != 2 ||
+        !objectForKeyMethod || method_getNumberOfArguments(objectForKeyMethod) != 3) {
+        ZVTEvent([NSString stringWithFormat:
+            @"SESSION_MAP_ENUMERATION_SKIPPED label=%@ class=%@ reason=methods_unavailable",
+            label ?: @"unknown", className]);
+        return;
+    }
+    char *keyReturn = method_copyReturnType(keyEnumeratorMethod);
+    char *valueReturn = method_copyReturnType(objectForKeyMethod);
+    BOOL validReturns = *ZVTUnqualifiedType(keyReturn) == '@' &&
+                        *ZVTUnqualifiedType(valueReturn) == '@';
+    free(keyReturn);
+    free(valueReturn);
+    if (!validReturns) {
+        ZVTEvent([NSString stringWithFormat:
+            @"SESSION_MAP_ENUMERATION_SKIPPED label=%@ class=%@ reason=return_type_mismatch",
+            label ?: @"unknown", className]);
+        return;
+    }
+
+    id enumerator = ((id (*)(id, SEL))method_getImplementation(keyEnumeratorMethod))
+        (storage, keyEnumeratorSelector);
+    if (!enumerator) {
+        ZVTEvent([NSString stringWithFormat:@"SESSION_MAP_ENUMERATION_EMPTY label=%@",
+                  label ?: @"unknown"]);
+        return;
+    }
+    SEL nextObjectSelector = @selector(nextObject);
+    Method nextObjectMethod = class_getInstanceMethod(object_getClass(enumerator), nextObjectSelector);
+    if (!nextObjectMethod || method_getNumberOfArguments(nextObjectMethod) != 2) return;
+
+    NSUInteger inspected = 0;
+    for (NSUInteger i = 0; i < 20; i++) {
+        id key = ((id (*)(id, SEL))method_getImplementation(nextObjectMethod))
+            (enumerator, nextObjectSelector);
+        if (!key) break;
+        id value = ((id (*)(id, SEL, id))method_getImplementation(objectForKeyMethod))
+            (storage, objectForKeySelector, key);
+        if (!value) continue;
+
+        Class valueClass = object_getClass(value);
+        if (!ZVTIsRegisteredRuntimeClass(valueClass)) {
+            ZVTEvent([NSString stringWithFormat:
+                @"SESSION_MAP_VALUE label=%@ index=%lu key=%@ valueClass=unverified pointer=%p",
+                label ?: @"unknown", (unsigned long)i, ZVTShortObjectValue(key), value]);
+            continue;
+        }
+        NSString *valueClassName = NSStringFromClass(valueClass) ?: @"<unnamed>";
+        NSString *valueKey = [NSString stringWithFormat:@"%p|%@", value, valueClassName];
+        BOOL firstTime = NO;
+        @synchronized (ZVTLoggedNestedObjectSlots()) {
+            if (![ZVTLoggedNestedObjectSlots() containsObject:valueKey]) {
+                [ZVTLoggedNestedObjectSlots() addObject:valueKey];
+                firstTime = YES;
+            }
+        }
+        ZVTEvent([NSString stringWithFormat:
+            @"SESSION_MAP_VALUE label=%@ index=%lu key=%@ valueClass=%@ valuePointer=%p firstSeen=%d",
+            label ?: @"unknown", (unsigned long)i, ZVTShortObjectValue(key),
+            valueClassName, value, firstTime]);
+        if (!firstTime) continue;
+        ZVTDumpMethods(valueClass, NO);
+        ZVTDumpMethods(valueClass, YES);
+        ZVTDumpInstanceIvarsInternal(value,
+            [NSString stringWithFormat:@"%@.value[%lu]<%@>", label ?: @"unknown",
+             (unsigned long)i, valueClassName], nestedDepth - 1);
+        inspected++;
+    }
+    ZVTEvent([NSString stringWithFormat:
+        @"SESSION_MAP_ENUMERATION_END label=%@ inspected=%lu cap=20",
+        label ?: @"unknown", (unsigned long)inspected]);
+}
+
 static void ZVTInspectObjectSlot(id owner, Ivar ivar, NSString *label, NSUInteger nestedDepth) {
     const char *rawName = ivar_getName(ivar);
     if (!ZVTIsKnownObjectSlotName(rawName)) return;
@@ -1334,6 +1416,8 @@ static void ZVTInspectObjectSlot(id owner, Ivar ivar, NSString *label, NSUIntege
     }
     ZVTDumpMethods(candidateClass, NO);
     ZVTDumpMethods(candidateClass, YES);
+    if (nestedDepth > 0) ZVTInspectDictionaryStorageValues(candidateObject,
+        [NSString stringWithFormat:@"%@.%s", label ?: @"unknown", rawName ?: "?"], nestedDepth);
     if (nestedDepth > 0)
         ZVTDumpInstanceIvarsInternal(candidateObject,
             [NSString stringWithFormat:@"%@.%s<%@>", label ?: @"unknown", rawName ?: "?", className],
