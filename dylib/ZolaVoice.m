@@ -143,54 +143,166 @@ static BOOL ZVExtractZip(NSURL *zipURL, NSString *folder, NSUInteger *importedCo
 
 void ZVOpenSettings(UIViewController *presentingViewController);
 static void ZVOpenVoicePackPicker(UIViewController *presentingViewController);
-static const void *ZVAttachEntryMarker = &ZVAttachEntryMarker;
-static const void *ZVAttachAttemptMarker = &ZVAttachAttemptMarker;
+static void ZVOpenVoicePackPicker(UIViewController *presentingViewController);
 static IMP ZVOriginalCreateAttachMediaView;
-static IMP ZVOriginalChatViewDidLayoutSubviews;
 static IMP ZVOriginalGridLayoutSubviews;
+static IMP ZVOriginalCellLayoutSubviews;
+static BOOL ZVGridLayoutHookInstalled;
+static BOOL ZVCellLayoutHookInstalled;
+static const NSInteger ZVVoiceEntryTileTag = 0x5A56504B;
+static const void *ZVVoiceEntryTargetKey = &ZVVoiceEntryTargetKey;
 
-@interface ZVVoicePackEntryTarget : NSObject
-@property (nonatomic, weak) UIViewController *presenter;
-- (void)openVoicePacks;
-@end
-
-@implementation ZVVoicePackEntryTarget
-- (void)openVoicePacks {
-    UIViewController *presenter = self.presenter;
-    if (!presenter || presenter.presentedViewController) return;
-    ZVOpenVoicePackPicker(presenter);
+static dispatch_queue_t ZVVoiceEntryLogQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        queue = dispatch_queue_create("com.fadedrk.zolacn.voice-entry-diagnostics", DISPATCH_QUEUE_SERIAL);
+    });
+    return queue;
 }
-@end
 
-static BOOL ZVFindAttachmentTextCell(UIView *root, UICollectionView **collectionOut,
-                                     UIView **textCellOut, UILabel **labelOut) {
-    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:root];
-    while (stack.count) {
-        UIView *view = stack.lastObject;
-        [stack removeLastObject];
-        if ([view isKindOfClass:UILabel.class]) {
-            NSString *value = [((UILabel *)view).text stringByTrimmingCharactersInSet:
-                               NSCharacterSet.whitespaceAndNewlineCharacterSet];
-            if ([value isEqualToString:@"文本"] || [value.lowercaseString isEqualToString:@"text"]) {
-                UIView *ancestor = view;
-                while (ancestor && ancestor != root) {
-                    if ([NSStringFromClass(ancestor.class) isEqualToString:@"InputFunctionCell"]) {
-                        UIView *parent = ancestor.superview;
-                        if ([parent isKindOfClass:UICollectionView.class] &&
-                            [NSStringFromClass(parent.class) isEqualToString:@"InputFunctionCollectionView"]) {
-                            if (collectionOut) *collectionOut = (UICollectionView *)parent;
-                            if (textCellOut) *textCellOut = ancestor;
-                            if (labelOut) *labelOut = (UILabel *)view;
-                            return YES;
-                        }
-                    }
-                    ancestor = ancestor.superview;
-                }
+static NSMutableSet<NSString *> *ZVVoiceEntryLoggedStages(void) {
+    static NSMutableSet<NSString *> *stages;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        stages = [NSMutableSet set];
+    });
+    return stages;
+}
+
+static void ZVWriteVoiceEntryLog(NSString *line) {
+    dispatch_async(ZVVoiceEntryLogQueue(), ^{
+        @autoreleasepool {
+            NSString *documents = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
+            [[NSFileManager defaultManager] createDirectoryAtPath:documents
+                                      withIntermediateDirectories:YES attributes:nil error:nil];
+            NSString *path = [documents stringByAppendingPathComponent:@"zolacn_voice_diag.log"];
+            NSString *entry = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], line];
+            NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+            if (!handle) {
+                [entry writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                return;
+            }
+            @try {
+                [handle seekToEndOfFile];
+                [handle writeData:[entry dataUsingEncoding:NSUTF8StringEncoding]];
+                [handle closeFile];
+            } @catch (__unused NSException *exception) {
+                @try { [handle closeFile]; } @catch (__unused NSException *ignored) {}
             }
         }
-        for (UIView *child in view.subviews) {
-            if (!child.hidden && child.alpha > 0.05) [stack addObject:child];
+    });
+}
+
+static void ZVLogVoiceEntryOnce(NSString *key, NSString *format, ...) {
+    if (!key.length || !format.length) return;
+    @synchronized (ZVVoiceEntryLoggedStages()) {
+        if ([ZVVoiceEntryLoggedStages() containsObject:key]) return;
+        [ZVVoiceEntryLoggedStages() addObject:key];
+    }
+    va_list args;
+    va_start(args, format);
+    NSString *detail = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+    NSString *line = [NSString stringWithFormat:@"[ZolaCN][VoiceEntry] %@", detail];
+    NSLog(@"%@", line);
+    ZVWriteVoiceEntryLog(line);
+}
+
+static BOOL ZVClassMatchesShortName(Class cls, NSString *shortName) {
+    if (!cls || !shortName.length) return NO;
+    NSString *suffix = [@"." stringByAppendingString:shortName];
+    for (Class current = cls; current; current = class_getSuperclass(current)) {
+        NSString *name = NSStringFromClass(current);
+        if ([name isEqualToString:shortName] || [name hasSuffix:suffix]) return YES;
+    }
+    return NO;
+}
+
+static Class ZVResolveClassByShortName(NSString *shortName) {
+    if (!shortName.length) return Nil;
+    Class cls = NSClassFromString(shortName);
+    if (!cls) cls = objc_getClass(shortName.UTF8String);
+    if (cls) return cls;
+
+    int capacity = objc_getClassList(NULL, 0);
+    if (capacity <= 0) return Nil;
+    Class *classes = (Class *)calloc((size_t)capacity, sizeof(Class));
+    if (!classes) return Nil;
+    int count = objc_getClassList(classes, capacity);
+    NSString *suffix = [@"." stringByAppendingString:shortName];
+    Class match = Nil;
+    for (int i = 0; i < count; i++) {
+        const char *rawName = class_getName(classes[i]);
+        if (!rawName) continue;
+        NSString *name = [NSString stringWithUTF8String:rawName];
+        if ([name isEqualToString:shortName] || [name hasSuffix:suffix]) {
+            match = classes[i];
+            break;
         }
+    }
+    free(classes);
+    return match;
+}
+
+static Method ZVFindDirectMethod(Class cls, SEL selector) {
+    if (!cls || !selector) return NULL;
+    unsigned int count = 0;
+    Method *methods = class_copyMethodList(cls, &count);
+    Method found = NULL;
+    for (unsigned int i = 0; i < count; i++) {
+        if (method_getName(methods[i]) == selector) {
+            found = methods[i];
+            break;
+        }
+    }
+    free(methods);
+    return found;
+}
+
+static BOOL ZVInstallLayoutHook(Class targetClass, IMP replacement, IMP *original,
+                                NSString *shortName, NSString *hookKind) {
+    if (!targetClass || !replacement || !original) return NO;
+    if (*original) return YES;
+
+    SEL selector = @selector(layoutSubviews);
+    Method direct = ZVFindDirectMethod(targetClass, selector);
+    if (direct) {
+        *original = method_setImplementation(direct, replacement);
+        BOOL ok = (*original != NULL);
+        ZVLogVoiceEntryOnce([NSString stringWithFormat:@"%@_hook_%@", hookKind, ok ? @"ready" : @"failed"],
+                            @"%@_hook_%@ (class=%@, selector=layoutSubviews)",
+                            hookKind, ok ? @"installed" : @"failed", NSStringFromClass(targetClass));
+        return ok;
+    }
+
+    Method inherited = class_getInstanceMethod(targetClass, selector);
+    if (!inherited) {
+        ZVLogVoiceEntryOnce([NSString stringWithFormat:@"%@_hook_missing_method", hookKind],
+                            @"FAILED: %@_layout_method_missing (class=%@)",
+                            hookKind, NSStringFromClass(targetClass));
+        return NO;
+    }
+
+    IMP inheritedIMP = method_getImplementation(inherited);
+    const char *types = method_getTypeEncoding(inherited);
+    if (class_addMethod(targetClass, selector, replacement, types)) {
+        *original = inheritedIMP;
+        ZVLogVoiceEntryOnce([NSString stringWithFormat:@"%@_hook_installed", hookKind],
+                            @"%@_hook_installed (class=%@, inherited_override=YES)",
+                            hookKind, NSStringFromClass(targetClass));
+        return YES;
+    }
+
+    // A method may have appeared between the direct-method check and class_addMethod.
+    direct = ZVFindDirectMethod(targetClass, selector);
+    if (direct) {
+        *original = method_setImplementation(direct, replacement);
+        BOOL ok = (*original != NULL);
+        ZVLogVoiceEntryOnce([NSString stringWithFormat:@"%@_hook_race_%@", hookKind, ok ? @"ready" : @"failed"],
+                            @"%@_hook_%@ (class=%@, race_recovery=YES)",
+                            hookKind, ok ? @"installed" : @"failed", NSStringFromClass(targetClass));
+        return ok;
     }
     return NO;
 }
@@ -204,109 +316,291 @@ static UIViewController *ZVContainingViewController(UIView *view) {
     return nil;
 }
 
-static void ZVInjectVoicePackEntryFromRoot(UIView *root, UIViewController *presenter) {
-    if (!root || !presenter) return;
+static UIViewController *ZVTopViewControllerForWindow(UIWindow *window) {
+    if (!window) return nil;
+    UIViewController *top = window.rootViewController;
+    for (NSUInteger depth = 0; top && depth < 20; depth++) {
+        if (top.presentedViewController) {
+            top = top.presentedViewController;
+            continue;
+        }
+        if ([top isKindOfClass:UINavigationController.class]) {
+            UIViewController *visible = ((UINavigationController *)top).visibleViewController;
+            if (visible && visible != top) { top = visible; continue; }
+        }
+        if ([top isKindOfClass:UITabBarController.class]) {
+            UIViewController *selected = ((UITabBarController *)top).selectedViewController;
+            if (selected && selected != top) { top = selected; continue; }
+        }
+        break;
+    }
+    return top;
+}
 
-    NSNumber *lastAttempt = objc_getAssociatedObject(root, ZVAttachAttemptMarker);
-    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    if (lastAttempt && now - lastAttempt.doubleValue < 0.35) return;
-    objc_setAssociatedObject(root, ZVAttachAttemptMarker, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+@interface ZVVoicePackEntryTarget : NSObject
+@property (nonatomic, weak) UIView *entryView;
+- (void)openVoicePacks;
+@end
 
-    UICollectionView *collectionView = nil;
-    UIView *textCell = nil;
-    UILabel *textLabel = nil;
-    if (!ZVFindAttachmentTextCell(root, &collectionView, &textCell, &textLabel)) return;
-
-    // Trace v2 confirmed: InputFunctionCollectionView is the four-column attachment grid.
-    // "文本" is column 3, row 3; its right-hand column 4 cell is intentionally empty.
-    UIView *host = collectionView.superview; // KBContentView
-    if (!host || ![NSStringFromClass(host.class) isEqualToString:@"KBContentView"]) {
-        NSLog(@"[ZolaCN][Voice] unexpected attachment host for InputFunctionCollectionView: %@",
-              host ? NSStringFromClass(host.class) : @"nil");
+@implementation ZVVoicePackEntryTarget
+- (void)openVoicePacks {
+    UIView *entry = self.entryView;
+    UIViewController *presenter = ZVContainingViewController(entry);
+    if (!presenter) presenter = ZVTopViewControllerForWindow(entry.window);
+    if (!presenter) {
+        ZVLogVoiceEntryOnce(@"tap_presenter_missing",
+                            @"FAILED: presenter_not_found (fallback_to_window_root_on_tap=YES)");
         return;
     }
-    if (objc_getAssociatedObject(host, ZVAttachEntryMarker)) return;
+    ZVLogVoiceEntryOnce(@"tile_tapped",
+                        @"tile_tapped (presenter=%@)", NSStringFromClass(presenter.class));
+    if (presenter.presentedViewController) {
+        UIViewController *top = ZVTopViewControllerForWindow(entry.window);
+        if (top) presenter = top;
+    }
+    ZVOpenVoicePackPicker(presenter);
+}
+@end
 
-    CGRect textFrame = [textCell convertRect:textCell.bounds toView:host];
-    CGFloat width = CGRectGetWidth(textFrame);
-    CGFloat height = CGRectGetHeight(textFrame);
-    CGFloat x = CGRectGetMaxX(textFrame);
-    CGFloat availableWidth = CGRectGetMaxX(host.bounds) - x;
-    if (width <= 0 || height <= 0 || availableWidth < width * 0.9 ||
-        CGRectGetMinX(textFrame) < 0 || x > CGRectGetWidth(host.bounds)) {
-        NSLog(@"[ZolaCN][Voice] measured Text tile has no valid fourth-column slot: %@",
-              NSStringFromCGRect(textFrame));
+@interface ZVVoiceEntryTileView : UIControl
+@property (nonatomic, strong) UIView *circleView;
+@property (nonatomic, strong) UIImageView *iconView;
+@property (nonatomic, strong) UILabel *titleView;
+@end
+
+@implementation ZVVoiceEntryTileView
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = UIColor.clearColor;
+        self.clipsToBounds = NO;
+        self.userInteractionEnabled = YES;
+
+        _circleView = [[UIView alloc] initWithFrame:CGRectZero];
+        _circleView.backgroundColor = [UIColor colorWithRed:0.05 green:0.47 blue:0.93 alpha:1.0];
+        _circleView.userInteractionEnabled = NO;
+        [self addSubview:_circleView];
+
+        _iconView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"waveform"]];
+        if (!_iconView.image) _iconView.image = [UIImage systemImageNamed:@"mic.fill"];
+        _iconView.tintColor = UIColor.whiteColor;
+        _iconView.contentMode = UIViewContentModeScaleAspectFit;
+        _iconView.userInteractionEnabled = NO;
+        [_circleView addSubview:_iconView];
+
+        _titleView = [[UILabel alloc] initWithFrame:CGRectZero];
+        _titleView.text = @"语音包";
+        _titleView.textAlignment = NSTextAlignmentCenter;
+        _titleView.font = [UIFont systemFontOfSize:13.0];
+        _titleView.textColor = UIColor.labelColor;
+        _titleView.userInteractionEnabled = NO;
+        [self addSubview:_titleView];
+    }
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat width = CGRectGetWidth(self.bounds);
+    CGFloat height = CGRectGetHeight(self.bounds);
+    CGFloat circle = MIN(54.0, width * 0.58);
+    CGFloat top = MAX(4.0, (height - circle - 22.0) * 0.5);
+    _circleView.frame = CGRectMake((width-circle)*0.5, top, circle, circle);
+    _circleView.layer.cornerRadius = circle * 0.5;
+    CGFloat icon = circle * 0.48;
+    _iconView.frame = CGRectMake((circle-icon)*0.5, (circle-icon)*0.5, icon, icon);
+    _titleView.frame = CGRectMake(1.0, CGRectGetMaxY(_circleView.frame)+5.0, width-2.0, 18.0);
+}
+@end
+
+static UIView *ZVFindAnchorCellInGrid(UICollectionView *grid, NSIndexPath **indexPathOut) {
+    if (![grid isKindOfClass:UICollectionView.class]) return nil;
+    NSArray<UICollectionViewCell *> *visible = grid.visibleCells;
+    UICollectionViewCell *bestCell = nil;
+    NSInteger maxItem = -1;
+    NSIndexPath *bestIndexPath = nil;
+
+    for (UICollectionViewCell *cell in visible) {
+        if (cell.tag == ZVVoiceEntryTileTag || cell.hidden || cell.alpha < 0.01) continue;
+        NSIndexPath *indexPath = [grid indexPathForCell:cell];
+        if (!indexPath) continue;
+        if (indexPath.section == 0 && indexPath.item == 10) {
+            if (indexPathOut) *indexPathOut = indexPath;
+            return cell;
+        }
+        if (indexPath.item > maxItem) {
+            maxItem = indexPath.item;
+            bestCell = cell;
+            bestIndexPath = indexPath;
+        }
+    }
+    if (bestCell) {
+        if (indexPathOut) *indexPathOut = bestIndexPath;
+        return bestCell;
+    }
+
+    // Fallback for a nonstandard cell hierarchy: find the lowest, rightmost visible InputFunctionCell.
+    UIView *geometricBest = nil;
+    CGFloat bestY = -CGFLOAT_MAX;
+    CGFloat bestX = -CGFLOAT_MAX;
+    for (UIView *candidate in grid.subviews) {
+        if (candidate.tag == ZVVoiceEntryTileTag || candidate.hidden || candidate.alpha < 0.01) continue;
+        BOOL isCandidate = [candidate isKindOfClass:UICollectionViewCell.class] ||
+                           ZVClassMatchesShortName(candidate.class, @"InputFunctionCell");
+        if (!isCandidate || CGRectGetWidth(candidate.bounds) < 40.0 ||
+            CGRectGetHeight(candidate.bounds) < 40.0) continue;
+        CGFloat y = CGRectGetMinY(candidate.frame);
+        CGFloat x = CGRectGetMinX(candidate.frame);
+        if (y > bestY + 1.0 || (fabs(y-bestY) <= 1.0 && x > bestX)) {
+            bestY = y;
+            bestX = x;
+            geometricBest = candidate;
+        }
+    }
+    if (geometricBest && indexPathOut) *indexPathOut = nil;
+    return geometricBest;
+}
+
+static void ZVInjectOrUpdateVoiceEntryInGrid(UICollectionView *grid) {
+    if (![grid isKindOfClass:UICollectionView.class]) return;
+    if (!NSThread.isMainThread) {
+        __weak UICollectionView *weakGrid = grid;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ZVInjectOrUpdateVoiceEntryInGrid(weakGrid);
+        });
         return;
     }
 
-    CGRect frame = CGRectMake(x, CGRectGetMinY(textFrame), MIN(width, availableWidth), height);
-    UIView *tile = [[UIView alloc] initWithFrame:frame];
-    tile.backgroundColor = UIColor.clearColor;
+    ZVLogVoiceEntryOnce(@"grid_layout_called",
+                        @"grid_layout_called (class=%@, bounds=%@, visibleCells=%lu, subviews=%lu)",
+                        NSStringFromClass(grid.class), NSStringFromCGRect(grid.bounds),
+                        (unsigned long)grid.visibleCells.count, (unsigned long)grid.subviews.count);
+
+    if (CGRectGetWidth(grid.bounds) < 200.0 || CGRectGetHeight(grid.bounds) < 80.0) {
+        ZVLogVoiceEntryOnce(@"fail_grid_bounds",
+                            @"FAILED: grid_bounds_invalid (bounds=%@)", NSStringFromCGRect(grid.bounds));
+        return;
+    }
+
+    NSIndexPath *anchorIndexPath = nil;
+    UIView *anchorCell = ZVFindAnchorCellInGrid(grid, &anchorIndexPath);
+    if (!anchorCell) {
+        ZVLogVoiceEntryOnce(@"fail_anchor_cell",
+                            @"FAILED: text_cell_not_found (visibleCells=%lu, subviews=%lu)",
+                            (unsigned long)grid.visibleCells.count, (unsigned long)grid.subviews.count);
+        return;
+    }
+
+    ZVLogVoiceEntryOnce(@"anchor_cell_found",
+                        @"text_cell_found (class=%@, indexPath=%@, frame=%@)",
+                        NSStringFromClass(anchorCell.class), anchorIndexPath ?: @"<geometry>",
+                        NSStringFromCGRect(anchorCell.frame));
+
+    NSString *labelText = nil;
+    NSMutableArray<UIView *> *labelStack = [NSMutableArray arrayWithObject:anchorCell];
+    while (labelStack.count && !labelText) {
+        UIView *v = labelStack.lastObject;
+        [labelStack removeLastObject];
+        if ([v isKindOfClass:UILabel.class]) {
+            UILabel *label = (UILabel *)v;
+            labelText = label.text ?: label.attributedText.string;
+            if (labelText.length) break;
+        }
+        [labelStack addObjectsFromArray:v.subviews];
+    }
+    ZVLogVoiceEntryOnce(@"anchor_label_observed",
+                        @"text_label_found (text=%@)", labelText ?: @"<index_or_geometry_only>");
+
+    CGRect cellFrame = anchorCell.frame;
+    CGFloat cellWidth = CGRectGetWidth(cellFrame);
+    CGFloat cellHeight = CGRectGetHeight(cellFrame);
+    CGFloat targetX = CGRectGetMaxX(cellFrame);
+    CGFloat availableWidth = CGRectGetMaxX(grid.bounds) - targetX;
+    if (cellWidth < 40.0 || cellHeight < 40.0 || availableWidth < cellWidth * 0.65 ||
+        CGRectGetMinY(cellFrame) < -cellHeight || CGRectGetMinY(cellFrame) > CGRectGetHeight(grid.bounds)) {
+        ZVLogVoiceEntryOnce(@"fail_target_frame",
+                            @"FAILED: target_frame_invalid (anchorFrame=%@, gridBounds=%@, availableWidth=%.2f)",
+                            NSStringFromCGRect(cellFrame), NSStringFromCGRect(grid.bounds), availableWidth);
+        return;
+    }
+
+    CGRect targetFrame = CGRectMake(targetX, CGRectGetMinY(cellFrame),
+                                    MIN(cellWidth, availableWidth), cellHeight);
+    ZVLogVoiceEntryOnce(@"target_frame_calculated",
+                        @"target_frame_calculated (frame=%@, anchor=%@)",
+                        NSStringFromCGRect(targetFrame), NSStringFromCGRect(cellFrame));
+
+    ZVVoiceEntryTileView *tile = (ZVVoiceEntryTileView *)[grid viewWithTag:ZVVoiceEntryTileTag];
+    if (![tile isKindOfClass:ZVVoiceEntryTileView.class]) {
+        tile = [[ZVVoiceEntryTileView alloc] initWithFrame:targetFrame];
+        tile.tag = ZVVoiceEntryTileTag;
+        ZVVoicePackEntryTarget *target = [ZVVoicePackEntryTarget new];
+        target.entryView = tile;
+        [tile addTarget:target action:@selector(openVoicePacks) forControlEvents:UIControlEventTouchUpInside];
+        objc_setAssociatedObject(tile, ZVVoiceEntryTargetKey, target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [grid addSubview:tile];
+        ZVLogVoiceEntryOnce(@"view_added",
+                            @"view_added (superview=%@, frame=%@, tag=0x%X)",
+                            NSStringFromClass(grid.class), NSStringFromCGRect(targetFrame), (unsigned int)ZVVoiceEntryTileTag);
+    } else {
+        tile.frame = targetFrame;
+    }
+
+    tile.hidden = NO;
+    tile.alpha = 1.0;
     tile.userInteractionEnabled = YES;
-    tile.accessibilityLabel = @"语音包";
+    [grid bringSubviewToFront:tile];
 
-    CGFloat iconSize = MIN(58.0, height * 0.62);
-    UIView *circle = [[UIView alloc] initWithFrame:
-                      CGRectMake((CGRectGetWidth(frame)-iconSize)/2.0, 5.0, iconSize, iconSize)];
-    circle.backgroundColor = UIColor.systemBlueColor;
-    circle.layer.cornerRadius = iconSize / 2.0;
-    circle.userInteractionEnabled = NO;
-
-    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"waveform"]];
-    icon.tintColor = UIColor.whiteColor;
-    icon.contentMode = UIViewContentModeScaleAspectFit;
-    icon.frame = CGRectMake(iconSize*0.23, iconSize*0.23, iconSize*0.54, iconSize*0.54);
-    [circle addSubview:icon];
-    [tile addSubview:circle];
-
-    UILabel *title = [[UILabel alloc] initWithFrame:
-                      CGRectMake(0, CGRectGetMaxY(circle.frame)+5.0, CGRectGetWidth(frame), 25.0)];
-    title.text = @"语音包";
-    title.textAlignment = NSTextAlignmentCenter;
-    title.font = textLabel.font ?: [UIFont systemFontOfSize:14.0];
-    title.textColor = textLabel.textColor ?: UIColor.labelColor;
-    title.userInteractionEnabled = NO;
-    [tile addSubview:title];
-
-    ZVVoicePackEntryTarget *target = [ZVVoicePackEntryTarget new];
-    target.presenter = presenter;
-    objc_setAssociatedObject(tile, @selector(openVoicePacks), target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
-    button.frame = tile.bounds;
-    button.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [button addTarget:target action:@selector(openVoicePacks) forControlEvents:UIControlEventTouchUpInside];
-    [tile addSubview:button];
-
-    [host addSubview:tile];
-    [host bringSubviewToFront:tile];
-    objc_setAssociatedObject(host, ZVAttachEntryMarker, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    NSLog(@"[ZolaCN][Voice] voice pack entry injected: presenter=%@ collection=%@ host=%@ textFrame=%@ entryFrame=%@",
-          NSStringFromClass(presenter.class), NSStringFromClass(collectionView.class),
-          NSStringFromClass(host.class), NSStringFromCGRect(textFrame), NSStringFromCGRect(frame));
+    if (tile.window && !tile.hidden && tile.alpha > 0.01 &&
+        !CGRectIsEmpty(CGRectIntersection([tile convertRect:tile.bounds toView:grid], grid.bounds))) {
+        CGRect frameInWindow = [tile convertRect:tile.bounds toView:tile.window];
+        ZVLogVoiceEntryOnce(@"view_visible",
+                            @"view_visible (window=%@, frameInWindow=%@, alpha=%.2f, hidden=%d)",
+                            NSStringFromClass(tile.window.class), NSStringFromCGRect(frameInWindow),
+                            tile.alpha, tile.hidden);
+    } else {
+        ZVLogVoiceEntryOnce(@"fail_view_not_visible",
+                            @"FAILED: view_not_visible_in_window (window=%@, hidden=%d, alpha=%.2f)",
+                            NSStringFromClass(tile.window.class), tile.hidden, tile.alpha);
+    }
 }
-
-static void ZVInjectVoicePackEntry(id controller) {
-    if (![controller isKindOfClass:UIViewController.class]) return;
-    UIViewController *chatViewController = (UIViewController *)controller;
-    ZVInjectVoicePackEntryFromRoot(chatViewController.view, chatViewController);
-}
-
-static const void *ZVGridLayoutPendingMarker = &ZVGridLayoutPendingMarker;
 
 static void ZVAttachmentGridLayoutSubviews(id self, SEL cmd) {
     if (ZVOriginalGridLayoutSubviews) {
         ((void (*)(id, SEL))ZVOriginalGridLayoutSubviews)(self, cmd);
     }
-    if (objc_getAssociatedObject(self, ZVGridLayoutPendingMarker)) return;
-    objc_setAssociatedObject(self, ZVGridLayoutPendingMarker, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        objc_setAssociatedObject(self, ZVGridLayoutPendingMarker, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        UIView *grid = (UIView *)self;
-        UIViewController *presenter = ZVContainingViewController(grid);
-        if (presenter) ZVInjectVoicePackEntryFromRoot(grid, presenter);
-    });
+    ZVInjectOrUpdateVoiceEntryInGrid((UICollectionView *)self);
+}
+
+static void ZVAttachmentCellLayoutSubviews(id self, SEL cmd) {
+    if (ZVOriginalCellLayoutSubviews) {
+        ((void (*)(id, SEL))ZVOriginalCellLayoutSubviews)(self, cmd);
+    }
+    UIView *parent = ((UIView *)self).superview;
+    while (parent && !ZVClassMatchesShortName(parent.class, @"InputFunctionCollectionView")) {
+        parent = parent.superview;
+    }
+    if ([parent isKindOfClass:UICollectionView.class]) {
+        ZVInjectOrUpdateVoiceEntryInGrid((UICollectionView *)parent);
+    }
+}
+
+static void ZVInjectVoicePackEntry(id controller) {
+    if (![controller isKindOfClass:UIViewController.class]) return;
+    UIView *root = ((UIViewController *)controller).view;
+    if (!root) return;
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:root];
+    while (stack.count) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        if (ZVClassMatchesShortName(view.class, @"InputFunctionCollectionView") &&
+            [view isKindOfClass:UICollectionView.class]) {
+            ZVInjectOrUpdateVoiceEntryInGrid((UICollectionView *)view);
+        }
+        for (UIView *child in view.subviews) {
+            if (!child.hidden && child.alpha > 0.01) [stack addObject:child];
+        }
+    }
 }
 
 static void ZVCreateAttachMediaView(id self, SEL cmd) {
@@ -317,97 +611,6 @@ static void ZVCreateAttachMediaView(id self, SEL cmd) {
         ZVInjectVoicePackEntry(self);
     });
 }
-
-static void ZVChatViewDidLayoutSubviews(id self, SEL cmd) {
-    if (ZVOriginalChatViewDidLayoutSubviews) {
-        ((void (*)(id, SEL))ZVOriginalChatViewDidLayoutSubviews)(self, cmd);
-    }
-    ZVInjectVoicePackEntry(self);
-}
-
-
-static BOOL ZVChatLayoutHookInstalled;
-static BOOL ZVGridLayoutHookInstalled;
-
-static BOOL ZVHookAttachmentGridLayout(Class gridClass) {
-    if (!gridClass) return NO;
-    if (ZVGridLayoutHookInstalled) return YES;
-
-    SEL selector = @selector(layoutSubviews);
-    unsigned int count = 0;
-    Method *methods = class_copyMethodList(gridClass, &count);
-    Method direct = NULL;
-    for (unsigned int i = 0; i < count; i++) {
-        if (method_getName(methods[i]) == selector) { direct = methods[i]; break; }
-    }
-    free(methods);
-
-    if (direct) {
-        ZVOriginalGridLayoutSubviews = method_setImplementation(direct, (IMP)ZVAttachmentGridLayoutSubviews);
-        ZVGridLayoutHookInstalled = (ZVOriginalGridLayoutSubviews != NULL);
-        NSLog(@"[ZolaCN][Voice] hooked direct %@ layoutSubviews installed=%d",
-              NSStringFromClass(gridClass), ZVGridLayoutHookInstalled);
-        return ZVGridLayoutHookInstalled;
-    }
-
-    Method inherited = class_getInstanceMethod(gridClass, selector);
-    if (!inherited) {
-        NSLog(@"[ZolaCN][Voice] layoutSubviews unavailable for %@", NSStringFromClass(gridClass));
-        return NO;
-    }
-    ZVOriginalGridLayoutSubviews = method_getImplementation(inherited);
-    if (class_addMethod(gridClass, selector, (IMP)ZVAttachmentGridLayoutSubviews,
-                        method_getTypeEncoding(inherited))) {
-        ZVGridLayoutHookInstalled = YES;
-        NSLog(@"[ZolaCN][Voice] added grid-scoped layoutSubviews override for %@",
-              NSStringFromClass(gridClass));
-        return YES;
-    }
-    ZVOriginalGridLayoutSubviews = NULL;
-    NSLog(@"[ZolaCN][Voice] failed to add grid layout hook for %@", NSStringFromClass(gridClass));
-    return NO;
-}
-
-static BOOL ZVHookChatLayout(Class chatController) {
-    if (!chatController) return NO;
-    if (ZVChatLayoutHookInstalled) return YES;
-
-    SEL selector = @selector(viewDidLayoutSubviews);
-    unsigned int count = 0;
-    Method *methods = class_copyMethodList(chatController, &count);
-    Method direct = NULL;
-    for (unsigned int i = 0; i < count; i++) {
-        if (method_getName(methods[i]) == selector) { direct = methods[i]; break; }
-    }
-    free(methods);
-
-    if (direct) {
-        ZVOriginalChatViewDidLayoutSubviews =
-            method_setImplementation(direct, (IMP)ZVChatViewDidLayoutSubviews);
-        ZVChatLayoutHookInstalled = (ZVOriginalChatViewDidLayoutSubviews != NULL);
-        NSLog(@"[ZolaCN][Voice] hooked direct %@ viewDidLayoutSubviews installed=%d",
-              NSStringFromClass(chatController), ZVChatLayoutHookInstalled);
-        return ZVChatLayoutHookInstalled;
-    }
-
-    Method inherited = class_getInstanceMethod(chatController, selector);
-    if (!inherited) {
-        NSLog(@"[ZolaCN][Voice] viewDidLayoutSubviews unavailable for %@", NSStringFromClass(chatController));
-        return NO;
-    }
-    const char *types = method_getTypeEncoding(inherited);
-    ZVOriginalChatViewDidLayoutSubviews = method_getImplementation(inherited);
-    if (class_addMethod(chatController, selector, (IMP)ZVChatViewDidLayoutSubviews, types)) {
-        ZVChatLayoutHookInstalled = YES;
-        NSLog(@"[ZolaCN][Voice] added chat-scoped viewDidLayoutSubviews override for %@ original=%p",
-              NSStringFromClass(chatController), ZVOriginalChatViewDidLayoutSubviews);
-        return YES;
-    }
-    ZVOriginalChatViewDidLayoutSubviews = NULL;
-    NSLog(@"[ZolaCN][Voice] failed to add chat layout hook for %@", NSStringFromClass(chatController));
-    return NO;
-}
-
 
 static const void *ZVCustomDurationAssociationKey = &ZVCustomDurationAssociationKey;
 static IMP ZVOriginalAudioItemDuration;
@@ -551,12 +754,24 @@ static void ZVHookDirectMethod(Class cls, SEL selector, IMP replacement, IMP *or
 static BOOL ZVInstallRuntimeHooksOnce(void) {
     Class audioItem = NSClassFromString(@"CommFeatureBase.AudioItem");
     Class baseChat = NSClassFromString(@"BaseChatTVC");
-    // The trace identified this as the concrete controller used by the actual chat screen.
-    Class concreteChat = NSClassFromString(@"ChatTableViewController");
-    Class attachmentGrid = NSClassFromString(@"InputFunctionCollectionView");
-    // Trace v2 identifies ChatTableViewController as the actual visible screen class.
-    // Wait for it explicitly so a subclass override cannot bypass a BaseChatTVC hook.
-    Class layoutTarget = concreteChat;
+    Class gridClass = ZVResolveClassByShortName(@"InputFunctionCollectionView");
+    Class cellClass = ZVResolveClassByShortName(@"InputFunctionCell");
+
+    if (gridClass && !ZVGridLayoutHookInstalled) {
+        ZVLogVoiceEntryOnce(@"grid_class_found",
+                            @"grid_class_found (realClass=%@)", NSStringFromClass(gridClass));
+        ZVGridLayoutHookInstalled =
+            ZVInstallLayoutHook(gridClass, (IMP)ZVAttachmentGridLayoutSubviews,
+                                &ZVOriginalGridLayoutSubviews, @"InputFunctionCollectionView", @"grid");
+    }
+
+    if (cellClass && !ZVCellLayoutHookInstalled) {
+        ZVLogVoiceEntryOnce(@"cell_class_found",
+                            @"cell_class_found (realClass=%@)", NSStringFromClass(cellClass));
+        ZVCellLayoutHookInstalled =
+            ZVInstallLayoutHook(cellClass, (IMP)ZVAttachmentCellLayoutSubviews,
+                                &ZVOriginalCellLayoutSubviews, @"InputFunctionCell", @"cell");
+    }
 
     if (audioItem && !ZVDurationHookInstalled) {
         ZVHookDirectMethod(audioItem, sel_registerName("duration"),
@@ -577,31 +792,30 @@ static BOOL ZVInstallRuntimeHooksOnce(void) {
         ZVCreateAttachHookInstalled = (ZVOriginalCreateAttachMediaView != NULL);
     }
 
-    if (layoutTarget && !ZVChatLayoutHookInstalled) {
-        ZVHookChatLayout(layoutTarget);
-    }
-    if (attachmentGrid && !ZVGridLayoutHookInstalled) {
-        ZVHookAttachmentGridLayout(attachmentGrid);
+    if (!gridClass) {
+        static NSUInteger notFoundAttempts = 0;
+        notFoundAttempts++;
+        if (notFoundAttempts == 1 || notFoundAttempts % 10 == 0) {
+            ZVLogVoiceEntryOnce([NSString stringWithFormat:@"grid_class_not_found_%lu",
+                                 (unsigned long)notFoundAttempts],
+                                @"FAILED: grid_class_not_found (attempt=%lu)",
+                                (unsigned long)notFoundAttempts);
+        }
     }
 
-    BOOL entryReady = ZVGridLayoutHookInstalled;
-    BOOL voiceReady = ZVAddVoiceHookInstalled;
-    BOOL durationReady = ZVDurationHookInstalled;
-    NSString *state = [NSString stringWithFormat:@"Base=%d Chat=%d Grid=%d chatLayout=%d gridLayout=%d addVoice=%d duration=%d create=%d",
-        baseChat != Nil, concreteChat != Nil, attachmentGrid != Nil, ZVChatLayoutHookInstalled,
-        ZVGridLayoutHookInstalled, ZVAddVoiceHookInstalled, ZVDurationHookInstalled, ZVCreateAttachHookInstalled];
+    NSString *state = [NSString stringWithFormat:
+        @"Grid=%d Cell=%d gridHook=%d cellHook=%d Base=%d addVoice=%d duration=%d create=%d",
+        gridClass != Nil, cellClass != Nil, ZVGridLayoutHookInstalled, ZVCellLayoutHookInstalled,
+        baseChat != Nil, ZVAddVoiceHookInstalled, ZVDurationHookInstalled, ZVCreateAttachHookInstalled];
     if (![state isEqualToString:ZVLastRuntimeHookState]) {
         ZVLastRuntimeHookState = state;
-        NSLog(@"[ZolaCN][Voice] runtime hook state changed: %@", state);
+        NSLog(@"[ZolaCN][VoiceEntry] runtime hook state changed: %@", state);
+        ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][VoiceEntry] runtime hook state changed: %@", state]);
     }
 
-    // Keep retrying until the attachment grid class itself is loaded and hooked;
-    // it may be created only after the user opens the attachment panel.
-    if (entryReady && voiceReady && durationReady) {
-        ZVRuntimeHooksInstalled = YES;
-        return YES;
-    }
-    return NO;
+    // The attachment entry is independent of the voice-send hooks. Keep trying until
+    // the grid layout hook is installed; audio sending hooks are retried in parallel here.
+    return (ZVGridLayoutHookInstalled && ZVAddVoiceHookInstalled && ZVDurationHookInstalled);
 }
 
 static void ZVScheduleRuntimeHookAttempt(NSUInteger attempt) {
@@ -625,6 +839,7 @@ void ZVInstall(void) {
         if (ZVRuntimeHooksStarted) return;
         ZVRuntimeHooksStarted = YES;
     }
+    ZVLogVoiceEntryOnce(@"dylib_loaded", @"dylib_loaded (bundle=%@)", NSBundle.mainBundle.bundleIdentifier ?: @"unknown");
     NSLog(@"[ZolaCN][Voice] starting retryable runtime hook installation");
     ZVScheduleRuntimeHookAttempt(0);
 }
