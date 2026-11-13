@@ -1,8 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
-#import <mach/mach.h>
-#import <mach/mach_vm.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <dispatch/dispatch.h>
@@ -1256,19 +1254,20 @@ static NSString *ZVTReadIvarWordDescription(id object, Ivar ivar, size_t instanc
     return @"aggregate_or_unknown_value_not_read";
 }
 
-static BOOL ZVTIsReadableCandidateAddress(uintptr_t pointer) {
-    if (pointer < 0x100000000ULL || (pointer & (sizeof(uintptr_t) - 1)) != 0) return NO;
-    mach_vm_address_t regionAddress = (mach_vm_address_t)pointer;
-    mach_vm_size_t regionSize = 0;
-    vm_region_basic_info_data_64_t info;
-    mach_msg_type_number_t infoCount = VM_REGION_BASIC_INFO_COUNT_64;
-    mach_port_t objectName = MACH_PORT_NULL;
-    kern_return_t result = mach_vm_region(mach_task_self(), &regionAddress, &regionSize,
-        VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &infoCount, &objectName);
-    if (objectName != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), objectName);
-    return result == KERN_SUCCESS && pointer >= regionAddress &&
-           pointer + sizeof(uintptr_t) <= regionAddress + regionSize &&
-           (info.protection & VM_PROT_READ) != 0;
+/*
+ * Only call object_getClass for nonzero, aligned, canonical user-space addresses
+ * read from explicitly whitelisted strong-reference ivar slots. The runtime class
+ * is then checked against objc_getClassList before any further inspection.
+ */
+static BOOL ZVTIsPlausibleObjCObjectAddress(uintptr_t pointer) {
+#if __LP64__
+    return pointer >= 0x100000000ULL &&
+           pointer < 0x0000800000000000ULL &&
+           (pointer & (sizeof(uintptr_t) - 1)) == 0;
+#else
+    return pointer >= 0x10000000UL &&
+           (pointer & (sizeof(uintptr_t) - 1)) == 0;
+#endif
 }
 
 static BOOL ZVTIsRegisteredRuntimeClass(Class candidate) {
@@ -1391,7 +1390,7 @@ static void ZVTInspectObjectSlot(id owner, Ivar ivar, NSString *label, NSUIntege
                   label ?: @"unknown", rawName ?: "?"]);
         return;
     }
-    if (!ZVTIsReadableCandidateAddress(raw)) {
+    if (!ZVTIsPlausibleObjCObjectAddress(raw)) {
         ZVTEvent([NSString stringWithFormat:
             @"IVAR_OBJECT_SLOT label=%@ name=%s pointer=0x%llx runtimeClass=not_readable_or_unaligned",
             label ?: @"unknown", rawName ?: "?", (unsigned long long)raw]);
