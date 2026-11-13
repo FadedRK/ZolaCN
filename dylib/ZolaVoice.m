@@ -622,14 +622,114 @@ static BOOL ZVCreateAttachHookInstalled;
 static NSString *ZVLastRuntimeHookState;
 
 
+static UIViewController *ZVFindVoiceSenderInControllerTree(UIViewController *controller,
+                                                                    SEL selector,
+                                                                    NSHashTable<UIViewController *> *visited) {
+    if (!controller || [visited containsObject:controller]) return nil;
+    [visited addObject:controller];
+
+    if ([controller respondsToSelector:selector]) return controller;
+
+    // Walk back toward the chat screen first. The picker may be presented by a
+    // container controller that is not itself the native BaseChatTVC instance.
+    UIViewController *found = ZVFindVoiceSenderInControllerTree(
+        controller.presentingViewController, selector, visited);
+    if (found) return found;
+    found = ZVFindVoiceSenderInControllerTree(controller.parentViewController, selector, visited);
+    if (found) return found;
+
+    if ([controller isKindOfClass:UINavigationController.class]) {
+        for (UIViewController *child in ((UINavigationController *)controller).viewControllers) {
+            found = ZVFindVoiceSenderInControllerTree(child, selector, visited);
+            if (found) return found;
+        }
+    }
+    if ([controller isKindOfClass:UITabBarController.class]) {
+        for (UIViewController *child in ((UITabBarController *)controller).viewControllers) {
+            found = ZVFindVoiceSenderInControllerTree(child, selector, visited);
+            if (found) return found;
+        }
+    }
+    if ([controller isKindOfClass:UISplitViewController.class]) {
+        for (UIViewController *child in ((UISplitViewController *)controller).viewControllers) {
+            found = ZVFindVoiceSenderInControllerTree(child, selector, visited);
+            if (found) return found;
+        }
+    }
+    for (UIViewController *child in controller.children) {
+        found = ZVFindVoiceSenderInControllerTree(child, selector, visited);
+        if (found) return found;
+    }
+    return ZVFindVoiceSenderInControllerTree(controller.presentedViewController, selector, visited);
+}
+
+static UIViewController *ZVResolveActiveVoiceSender(UIViewController *preferredController) {
+    SEL selector = sel_registerName("addSendingVoiceWithAudioItem:fileLink:uploading:source:");
+    NSHashTable<UIViewController *> *visited =
+        [NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality];
+
+    UIViewController *sender = ZVFindVoiceSenderInControllerTree(preferredController, selector, visited);
+    if (sender) {
+        ZVWriteVoiceEntryLog([NSString stringWithFormat:
+            @"[ZolaCN][VoiceSend] sender_resolved (class=%@, source=preferred_controller_tree)",
+            NSStringFromClass(sender.class)]);
+        return sender;
+    }
+
+    NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class]) continue;
+            UIWindowScene *windowScene = (UIWindowScene *)scene;
+            if (windowScene.activationState != UISceneActivationStateForegroundActive &&
+                windowScene.activationState != UISceneActivationStateForegroundInactive) continue;
+            for (UIWindow *window in windowScene.windows) {
+                if (!window.hidden && window.alpha > 0.01) [windows addObject:window];
+            }
+        }
+    } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        for (UIWindow *window in UIApplication.sharedApplication.windows) {
+            if (!window.hidden && window.alpha > 0.01) [windows addObject:window];
+        }
+#pragma clang diagnostic pop
+    }
+
+    [windows sortUsingComparator:^NSComparisonResult(UIWindow *a, UIWindow *b) {
+        if (a.isKeyWindow == b.isKeyWindow) return NSOrderedSame;
+        return a.isKeyWindow ? NSOrderedAscending : NSOrderedDescending;
+    }];
+
+    for (UIWindow *window in windows) {
+        sender = ZVFindVoiceSenderInControllerTree(window.rootViewController, selector, visited);
+        if (sender) {
+            ZVWriteVoiceEntryLog([NSString stringWithFormat:
+                @"[ZolaCN][VoiceSend] sender_resolved (class=%@, source=window:%@)",
+                NSStringFromClass(sender.class), NSStringFromClass(window.class)]);
+            return sender;
+        }
+    }
+
+    Class baseChat = NSClassFromString(@"BaseChatTVC");
+    BOOL baseHasMethod = baseChat && class_getInstanceMethod(baseChat, selector) != NULL;
+    NSString *preferredName = preferredController ? NSStringFromClass(preferredController.class) : @"nil";
+    NSString *baseName = baseChat ? NSStringFromClass(baseChat) : @"nil";
+    ZVWriteVoiceEntryLog([NSString stringWithFormat:
+        @"[ZolaCN][VoiceSend] FAILED: sender_not_found (preferred=%@, BaseChatTVC=%@, selector_available=%d, windows=%lu)",
+        preferredName, baseName, baseHasMethod, (unsigned long)windows.count]);
+    return nil;
+}
+
 static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatController, NSString **errorText) {
     if (!sourceURL.isFileURL || ![[NSFileManager defaultManager] fileExistsAtPath:sourceURL.path]) {
         if (errorText) *errorText = @"音频文件不存在";
         return NO;
     }
     SEL addSelector = sel_registerName("addSendingVoiceWithAudioItem:fileLink:uploading:source:");
-    if (!chatController || ![chatController respondsToSelector:addSelector]) {
-        if (errorText) *errorText = @"当前聊天界面不支持原生语音发送";
+    UIViewController *voiceSender = ZVResolveActiveVoiceSender(chatController);
+    if (!voiceSender) {
+        if (errorText) *errorText = @"没有找到当前聊天的原生语音发送控制器。请确认仍停留在聊天窗口后重试；诊断信息已写入 Documents/zolacn_voice_diag.log。";
         return NO;
     }
 
@@ -693,13 +793,14 @@ static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatControll
 
     // Reuse the exact native BaseChatTVC voice-send entry observed in the V5 trace.
     void (*sendVoice)(id, SEL, id, id, BOOL, long long) =
-        (void (*)(id, SEL, id, id, BOOL, long long))[chatController methodForSelector:addSelector];
+        (void (*)(id, SEL, id, id, BOOL, long long))[voiceSender methodForSelector:addSelector];
     if (!sendVoice) {
         [[NSFileManager defaultManager] removeItemAtPath:stagedPath error:nil];
-        if (errorText) *errorText = @"无法调用 Zalo 原生语音发送方法";
+        if (errorText) *errorText = [NSString stringWithFormat:@"找到控制器 %@，但无法取得原生语音发送方法",
+                                     NSStringFromClass(voiceSender.class)];
         return NO;
     }
-    sendVoice(chatController, addSelector, audioItem, nil, YES, 0);
+    sendVoice(voiceSender, addSelector, audioItem, nil, YES, 0);
     NSLog(@"[ZolaCN][Voice] voice pack submitted to native sender: %@ duration=%.3f size=%llu",
           sourceURL.lastPathComponent, duration, fileSize);
     return YES;
