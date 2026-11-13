@@ -17,6 +17,8 @@ static BOOL ZVTUploadSuccessCallbackFound;
 static BOOL ZVTUploadFailureCallbackFound;
 static BOOL ZVTUploadSuccessCallbackHooked;
 static BOOL ZVTUploadFailureCallbackHooked;
+static BOOL ZVTUploadWillChunkHooked;
+static BOOL ZVTUploadDidChunkHooked;
 
 typedef id (*ZVTRetainedFn0)(id, SEL) __attribute__((ns_returns_retained));
 typedef id (*ZVTRetainedFn1)(id, SEL, uintptr_t) __attribute__((ns_returns_retained));
@@ -81,7 +83,7 @@ static void ZVTLog(NSString *line) {
         @autoreleasepool {
             NSURL *cacheURL = [[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory
                                                                        inDomains:NSUserDomainMask] firstObject];
-            NSString *path = [cacheURL URLByAppendingPathComponent:@"ZolaVoiceTrace-v7.log"].path;
+            NSString *path = [cacheURL URLByAppendingPathComponent:@"ZolaVoiceTrace-v7.1.log"].path;
             NSString *entry = [NSString stringWithFormat:@"%@ %@\n", ZVTLocalTimestamp(), line];
             NSData *data = [entry dataUsingEncoding:NSUTF8StringEncoding];
             if (![[NSFileManager defaultManager] fileExistsAtPath:path])
@@ -630,6 +632,84 @@ static void ZVTUploadDidFail(id self, SEL cmd, id uploader, id sessionConfigurat
     }
 }
 
+static BOOL ZVTMethodHasExactEncoding(Method method, const char *expected) {
+    if (!method || !expected) return NO;
+    const char *actual = method_getTypeEncoding(method);
+    return actual && strcmp(actual, expected) == 0;
+}
+
+static void ZVTUploadWillChunk(id self, SEL cmd, id uploader, id sessionConfiguration,
+                               long long chunkID, long long size, BOOL isEnded) {
+    ZVTEvent([NSString stringWithFormat:
+        @"UPLOAD_CHUNK_BEGIN kind=will receiver=%@ chunkId=%lld size=%lld isEnded=%d",
+        ZVTClassName(self), chunkID, size, isEnded]);
+    IMP original = ZVTOriginalCallbackForInvocation(self, cmd);
+    if (original) {
+        ((void (*)(id, SEL, id, id, long long, long long, BOOL))original)
+            (self, cmd, uploader, sessionConfiguration, chunkID, size, isEnded);
+        ZVTEvent([NSString stringWithFormat:
+            @"UPLOAD_CHUNK_END kind=will chunkId=%lld original_returned=YES", chunkID]);
+    } else {
+        ZVTEvent([NSString stringWithFormat:
+            @"UPLOAD_CHUNK_ABORT kind=will chunkId=%lld original_missing=YES", chunkID]);
+    }
+}
+
+static void ZVTUploadDidChunk(id self, SEL cmd, id uploader, id sessionConfiguration,
+                              long long chunkID, long long size) {
+    ZVTEvent([NSString stringWithFormat:
+        @"UPLOAD_CHUNK_BEGIN kind=did receiver=%@ chunkId=%lld size=%lld",
+        ZVTClassName(self), chunkID, size]);
+    IMP original = ZVTOriginalCallbackForInvocation(self, cmd);
+    if (original) {
+        ((void (*)(id, SEL, id, id, long long, long long))original)
+            (self, cmd, uploader, sessionConfiguration, chunkID, size);
+        ZVTEvent([NSString stringWithFormat:
+            @"UPLOAD_CHUNK_END kind=did chunkId=%lld original_returned=YES", chunkID]);
+    } else {
+        ZVTEvent([NSString stringWithFormat:
+            @"UPLOAD_CHUNK_ABORT kind=did chunkId=%lld original_missing=YES", chunkID]);
+    }
+}
+
+static void ZVTInstallExactCallbackForClass(Class cls, SEL selector, IMP replacement,
+                                            const char *expectedEncoding, NSString *kind,
+                                            BOOL *hookedFlag) {
+    if (!cls || !selector) return;
+    Method direct = ZVTFindDirectMethod(cls, selector);
+    if (!direct) {
+        Method inherited = class_getInstanceMethod(cls, selector);
+        if (inherited) {
+            ZVTLog([NSString stringWithFormat:
+                @"UPLOAD_CALLBACK_HOOK_SKIPPED class=%@ selector=%@ reason=inherited_method",
+                NSStringFromClass(cls), NSStringFromSelector(selector)]);
+        }
+        return;
+    }
+    const char *actual = method_getTypeEncoding(direct);
+    if (!ZVTMethodHasExactEncoding(direct, expectedEncoding)) {
+        ZVTLog([NSString stringWithFormat:
+            @"UPLOAD_CALLBACK_HOOK_SKIPPED class=%@ selector=%@ kind=%@ reason=exact_encoding_mismatch actual=%@ expected=%s",
+            NSStringFromClass(cls), NSStringFromSelector(selector), kind,
+            actual ? [NSString stringWithUTF8String:actual] : @"?", expectedEncoding]);
+        return;
+    }
+    NSString *key = ZVTCallbackKey(cls, selector);
+    @synchronized (ZVTCallbackOriginals()) {
+        if (ZVTCallbackOriginals()[key]) {
+            if (hookedFlag) *hookedFlag = YES;
+            return;
+        }
+        IMP original = method_setImplementation(direct, replacement);
+        if (!original) return;
+        ZVTCallbackOriginals()[key] = [NSValue valueWithPointer:original];
+    }
+    if (hookedFlag) *hookedFlag = YES;
+    ZVTLog([NSString stringWithFormat:
+        @"UPLOAD_CALLBACK_HOOK_INSTALLED class=%@ selector=%@ kind=%@ encoding=%s exact_match=YES",
+        NSStringFromClass(cls), NSStringFromSelector(selector), kind, expectedEncoding]);
+}
+
 static void ZVTInstallUploadCallbackForClass(Class cls, SEL selector, IMP replacement,
                                              BOOL *foundFlag, BOOL *hookedFlag) {
     if (!cls || !selector) return;
@@ -670,11 +750,18 @@ static void ZVTInstallUploadCallbackForClass(Class cls, SEL selector, IMP replac
 
 static void ZVTProbeUploadCallbacksForClass(Class cls) {
     SEL success = sel_registerName("uploader:sessionConfiguration:didFinishWithFileLink:");
-    SEL failure = sel_registerName("uploader:sessionConfiguration:didFailWithError:");
+    SEL failure = sel_registerName("uploader:sessionConfiguration:didStopWithError:");
+    SEL willChunk = sel_registerName("uploader:sessionConfiguration:willUploadChunkId:size:isEnded:");
+    SEL didChunk = sel_registerName("uploader:sessionConfiguration:didUploadChunkId:size:");
+
     ZVTInstallUploadCallbackForClass(cls, success, (IMP)ZVTUploadDidFinish,
                                      &ZVTUploadSuccessCallbackFound, &ZVTUploadSuccessCallbackHooked);
     ZVTInstallUploadCallbackForClass(cls, failure, (IMP)ZVTUploadDidFail,
                                      &ZVTUploadFailureCallbackFound, &ZVTUploadFailureCallbackHooked);
+    ZVTInstallExactCallbackForClass(cls, willChunk, (IMP)ZVTUploadWillChunk,
+                                    "v52@0:8@16@24q32q40B48", @"will_chunk", &ZVTUploadWillChunkHooked);
+    ZVTInstallExactCallbackForClass(cls, didChunk, (IMP)ZVTUploadDidChunk,
+                                    "v48@0:8@16@24q32q40", @"did_chunk", &ZVTUploadDidChunkHooked);
 }
 
 static void ZVTAddVoice(id self, SEL cmd, id item, id link, BOOL uploading, long long source) {
@@ -810,9 +897,10 @@ static void ZVTScanAttempt(NSUInteger attempt) {
             ZVTScanRuntime();
             if (attempt == 4) {
                 ZVTLog([NSString stringWithFormat:
-                    @"V7_SCAN_SUMMARY viewModelFound=%d successCallbackFound=%d successCallbackHooked=%d failureCallbackFound=%d failureCallbackHooked=%d metadataOnly=YES broadLifecycleHooks=DISABLED",
+                    @"V7_1_SCAN_SUMMARY viewModelFound=%d successCallbackFound=%d successCallbackHooked=%d failureCallbackFound=%d failureCallbackHooked=%d willChunkHooked=%d didChunkHooked=%d metadataOnly=YES broadLifecycleHooks=DISABLED",
                     ZVTVoiceBoardViewModelFound, ZVTUploadSuccessCallbackFound, ZVTUploadSuccessCallbackHooked,
-                    ZVTUploadFailureCallbackFound, ZVTUploadFailureCallbackHooked]);
+                    ZVTUploadFailureCallbackFound, ZVTUploadFailureCallbackHooked,
+                    ZVTUploadWillChunkHooked, ZVTUploadDidChunkHooked]);
             }
             if (attempt < 4) ZVTScanAttempt(attempt + 1);
         }
@@ -824,8 +912,8 @@ void ZVTInstall(void) {
         if (ZVTInstalled) return;
         ZVTInstalled = YES;
     }
-    ZVTQueue = dispatch_queue_create("com.fadedrk.zolacn.voicetrace.v7", DISPATCH_QUEUE_SERIAL);
-    ZVTLog(@"START version=7 targeted_viewmodel_upload_callbacks metadata_only=YES timezone=local log=Library/Caches/ZolaVoiceTrace-v7.log");
+    ZVTQueue = dispatch_queue_create("com.fadedrk.zolacn.voicetrace.v7_1", DISPATCH_QUEUE_SERIAL);
+    ZVTLog(@"START version=7.1 targeted_viewmodel_upload_and_chunk_callbacks metadata_only=YES timezone=local log=Library/Caches/ZolaVoiceTrace-v7.1.log");
     ZVTScanAttempt(0);
 }
 

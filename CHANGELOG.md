@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.5] — 2026-11-13
+
+### Added
+- Corrected the VoiceBoardViewModel upload failure callback to the runtime-confirmed selector `uploader:sessionConfiguration:didStopWithError:`.
+- Added exact-encoding probes for upload chunk preparation and completion callbacks.
+- Kept upload success callback and UploadedVoiceLink field inspection.
+- Uses a separate `ZolaVoiceTrace-v7.1.log` file with local-time timestamps.
+
+### Safety
+- All three added probes require exact runtime type-encoding matches.
+- Broad uploader lifecycle swizzling remains disabled.
+- Swift instance ivar values are never read.
+- Voice-pack send path and UI remain unchanged.
+
 ## [1.0.4] — 2026-11-13
 
 ### Added
@@ -19,7 +33,7 @@ Final integrated release.
 
 ### Added
 - Chinese runtime localization for Zalo.
-- Anti-recall support with self-recall display control.
+- Anti-recall support for self-recall display control.
 - Integrated **Themes & Interface** settings.
 - Custom chat bubbles and chat background.
 - Global chat background switch.
