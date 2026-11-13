@@ -722,6 +722,9 @@ static UIViewController *ZVResolveActiveVoiceSender(UIViewController *preferredC
 }
 
 static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatController, NSString **errorText) {
+    ZVWriteVoiceEntryLog([NSString stringWithFormat:
+        @"[ZolaCN][VoiceSend][V7] stage=entry file=%@ fileURL=%d",
+        sourceURL.lastPathComponent ?: @"nil", sourceURL.isFileURL]);
     if (!sourceURL.isFileURL || ![[NSFileManager defaultManager] fileExistsAtPath:sourceURL.path]) {
         if (errorText) *errorText = @"音频文件不存在";
         return NO;
@@ -729,9 +732,13 @@ static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatControll
     SEL addSelector = sel_registerName("addSendingVoiceWithAudioItem:fileLink:uploading:source:");
     UIViewController *voiceSender = ZVResolveActiveVoiceSender(chatController);
     if (!voiceSender) {
+        ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend][V7] stage=sender_resolution_failed");
         if (errorText) *errorText = @"没有找到当前聊天的原生语音发送控制器。请确认仍停留在聊天窗口后重试；诊断信息已写入 Documents/zolacn_voice_diag.log。";
         return NO;
     }
+    ZVWriteVoiceEntryLog([NSString stringWithFormat:
+        @"[ZolaCN][VoiceSend][V7] stage=sender_resolved class=%@",
+        NSStringFromClass(voiceSender.class)]);
 
     Class itemClass = NSClassFromString(@"CommFeatureBase.AudioItem");
     SEL initSelector = sel_registerName("initWithFileId:mediaId:clientId:filePath:");
@@ -790,6 +797,9 @@ static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatControll
             (void (*)(id, SEL, long long))[audioItem methodForSelector:setSizeSelector];
         if (setSize) setSize(audioItem, setSizeSelector, (long long)fileSize);
     }
+    ZVWriteVoiceEntryLog([NSString stringWithFormat:
+        @"[ZolaCN][VoiceSend][V7] stage=audio_item_ready class=%@ duration=%.3f size=%llu",
+        NSStringFromClass(audioItem.class), duration, fileSize]);
 
     // Reuse the exact native BaseChatTVC voice-send entry observed in the V5 trace.
     void (*sendVoice)(id, SEL, id, id, BOOL, long long) =
@@ -800,7 +810,9 @@ static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatControll
                                      NSStringFromClass(voiceSender.class)];
         return NO;
     }
+    ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend][V7] stage=native_send_begin fileLink=nil uploading=1 source=0");
     sendVoice(voiceSender, addSelector, audioItem, nil, YES, 0);
+    ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend][V7] stage=native_send_returned");
     NSLog(@"[ZolaCN][Voice] voice pack submitted to native sender: %@ duration=%.3f size=%llu",
           sourceURL.lastPathComponent, duration, fileSize);
     return YES;

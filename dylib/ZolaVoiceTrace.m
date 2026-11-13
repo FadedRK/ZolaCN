@@ -12,6 +12,11 @@ static BOOL ZVTInstalled;
 static NSUInteger ZVTEventCount;
 static IMP OAddVoice;
 static IMP OUpdateVoice;
+static BOOL ZVTVoiceBoardViewModelFound;
+static BOOL ZVTUploadSuccessCallbackFound;
+static BOOL ZVTUploadFailureCallbackFound;
+static BOOL ZVTUploadSuccessCallbackHooked;
+static BOOL ZVTUploadFailureCallbackHooked;
 
 typedef id (*ZVTRetainedFn0)(id, SEL) __attribute__((ns_returns_retained));
 typedef id (*ZVTRetainedFn1)(id, SEL, uintptr_t) __attribute__((ns_returns_retained));
@@ -58,14 +63,26 @@ static NSMutableSet<NSString *> *ZVTHookedMethods(void) {
 
 #pragma mark - Logging
 
+static NSString *ZVTLocalTimestamp(void) {
+    static NSDateFormatter *formatter;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        formatter = [NSDateFormatter new];
+        formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        formatter.timeZone = [NSTimeZone localTimeZone];
+        formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS Z";
+    });
+    return [formatter stringFromDate:[NSDate date]];
+}
+
 static void ZVTLog(NSString *line) {
     if (!ZVTQueue || !line.length) return;
     dispatch_async(ZVTQueue, ^{
         @autoreleasepool {
             NSURL *cacheURL = [[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory
                                                                        inDomains:NSUserDomainMask] firstObject];
-            NSString *path = [cacheURL URLByAppendingPathComponent:@"ZolaVoiceTrace-v6.log"].path;
-            NSString *entry = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], line];
+            NSString *path = [cacheURL URLByAppendingPathComponent:@"ZolaVoiceTrace-v7.log"].path;
+            NSString *entry = [NSString stringWithFormat:@"%@ %@\n", ZVTLocalTimestamp(), line];
             NSData *data = [entry dataUsingEncoding:NSUTF8StringEncoding];
             if (![[NSFileManager defaultManager] fileExistsAtPath:path])
                 [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
@@ -204,7 +221,8 @@ static BOOL ZVTIsTargetClassName(NSString *name) {
     BOOL audioUpload = [lower containsString:@"audio"] && [lower containsString:@"upload"];
     BOOL namedLink = [lower containsString:@"uploadedvoicelink"];
     BOOL namedUploader = [lower containsString:@"voicecontinuousuploader"];
-    return voiceUpload || audioUpload || namedLink || namedUploader;
+    BOOL voiceBoardViewModel = [lower containsString:@"voiceboardviewmodel"];
+    return voiceUpload || audioUpload || namedLink || namedUploader || voiceBoardViewModel;
 }
 
 static BOOL __attribute__((unused)) ZVTSelectorLooksLikeLifecycle(NSString *selectorName) {
@@ -497,6 +515,168 @@ static Class ZVTResolveClassByShortName(NSString *shortName) {
     return match;
 }
 
+
+#pragma mark - V7 targeted upload completion probes
+
+static NSMutableDictionary<NSString *, NSValue *> *ZVTCallbackOriginals(void) {
+    static NSMutableDictionary<NSString *, NSValue *> *records;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ records = [NSMutableDictionary dictionary]; });
+    return records;
+}
+
+static NSString *ZVTCallbackKey(Class cls, SEL selector) {
+    return [NSString stringWithFormat:@"%p|%@", cls, NSStringFromSelector(selector)];
+}
+
+static BOOL ZVTMethodIsVoidWithThreeObjectArguments(Method method) {
+    if (!method || method_getNumberOfArguments(method) != 5) return NO;
+    char *returnType = method_copyReturnType(method);
+    BOOL valid = *ZVTUnqualifiedType(returnType) == 'v';
+    free(returnType);
+    if (!valid) return NO;
+    for (unsigned int index = 2; index <= 4; index++) {
+        char *argumentType = method_copyArgumentType(method, index);
+        BOOL isObject = *ZVTUnqualifiedType(argumentType) == '@';
+        free(argumentType);
+        if (!isObject) return NO;
+    }
+    return YES;
+}
+
+static IMP ZVTOriginalCallbackForInvocation(id receiver, SEL selector) {
+    if (!receiver || !selector) return NULL;
+    @synchronized (ZVTCallbackOriginals()) {
+        for (Class cls = object_getClass(receiver); cls; cls = class_getSuperclass(cls)) {
+            NSValue *value = ZVTCallbackOriginals()[ZVTCallbackKey(cls, selector)];
+            if (value) return (IMP)value.pointerValue;
+        }
+    }
+    return NULL;
+}
+
+static BOOL ZVTIsObjectGetter(Method method) {
+    if (!method || method_getNumberOfArguments(method) != 2) return NO;
+    char *returnType = method_copyReturnType(method);
+    BOOL valid = *ZVTUnqualifiedType(returnType) == '@';
+    free(returnType);
+    return valid;
+}
+
+static BOOL ZVTIsInt64Getter(Method method) {
+    if (!method || method_getNumberOfArguments(method) != 2) return NO;
+    char *returnType = method_copyReturnType(method);
+    BOOL valid = *ZVTUnqualifiedType(returnType) == 'q';
+    free(returnType);
+    return valid;
+}
+
+static void ZVTReadUploadedVoiceLinkFields(id link) {
+    if (!link) return;
+    Class cls = object_getClass(link);
+    SEL fileIDSelector = sel_registerName("fileId");
+    Method fileIDMethod = class_getInstanceMethod(cls, fileIDSelector);
+    if (ZVTIsInt64Getter(fileIDMethod)) {
+        long long (*getter)(id, SEL) = (long long (*)(id, SEL))method_getImplementation(fileIDMethod);
+        ZVTEvent([NSString stringWithFormat:@"UPLOAD_LINK_FIELD fileId=%lld", getter(link, fileIDSelector)]);
+    } else {
+        ZVTEvent(@"UPLOAD_LINK_FIELD fileId=unavailable_or_signature_mismatch");
+    }
+
+    NSArray<NSString *> *objectFields = @[@"aacLink", @"originalLink"];
+    for (NSString *field in objectFields) {
+        SEL selector = sel_registerName(field.UTF8String);
+        Method method = class_getInstanceMethod(cls, selector);
+        if (!ZVTIsObjectGetter(method)) {
+            ZVTEvent([NSString stringWithFormat:@"UPLOAD_LINK_FIELD %@=unavailable_or_signature_mismatch", field]);
+            continue;
+        }
+        id (*getter)(id, SEL) = (id (*)(id, SEL))method_getImplementation(method);
+        id value = getter(link, selector);
+        ZVTEvent([NSString stringWithFormat:@"UPLOAD_LINK_FIELD %@=%@", field, ZVTShortObjectValue(value)]);
+    }
+}
+
+static void ZVTUploadDidFinish(id self, SEL cmd, id uploader, id sessionConfiguration, id fileLink) {
+    ZVTEvent([NSString stringWithFormat:
+        @"UPLOAD_CALLBACK_BEGIN kind=success receiver=%@ uploader=%@ configuration=%@ fileLink=%@",
+        ZVTClassName(self), ZVTClassName(uploader), ZVTClassName(sessionConfiguration), ZVTClassName(fileLink)]);
+    ZVTDescribeObject(fileLink, @"UploadedVoiceLink", NO);
+    ZVTReadUploadedVoiceLinkFields(fileLink);
+    IMP original = ZVTOriginalCallbackForInvocation(self, cmd);
+    if (original) {
+        ((void (*)(id, SEL, id, id, id))original)(self, cmd, uploader, sessionConfiguration, fileLink);
+        ZVTEvent(@"UPLOAD_CALLBACK_END kind=success original_returned=YES");
+    } else {
+        ZVTEvent(@"UPLOAD_CALLBACK_ABORT kind=success original_missing=YES");
+    }
+}
+
+static void ZVTUploadDidFail(id self, SEL cmd, id uploader, id sessionConfiguration, id error) {
+    ZVTEvent([NSString stringWithFormat:
+        @"UPLOAD_CALLBACK_BEGIN kind=failure receiver=%@ uploader=%@ configuration=%@ error=%@",
+        ZVTClassName(self), ZVTClassName(uploader), ZVTClassName(sessionConfiguration), ZVTClassName(error)]);
+    if ([error isKindOfClass:NSError.class]) {
+        NSError *nativeError = (NSError *)error;
+        ZVTEvent([NSString stringWithFormat:@"UPLOAD_ERROR domain=%@ code=%ld",
+                  nativeError.domain ?: @"", (long)nativeError.code]);
+    }
+    IMP original = ZVTOriginalCallbackForInvocation(self, cmd);
+    if (original) {
+        ((void (*)(id, SEL, id, id, id))original)(self, cmd, uploader, sessionConfiguration, error);
+        ZVTEvent(@"UPLOAD_CALLBACK_END kind=failure original_returned=YES");
+    } else {
+        ZVTEvent(@"UPLOAD_CALLBACK_ABORT kind=failure original_missing=YES");
+    }
+}
+
+static void ZVTInstallUploadCallbackForClass(Class cls, SEL selector, IMP replacement,
+                                             BOOL *foundFlag, BOOL *hookedFlag) {
+    if (!cls || !selector) return;
+    Method direct = ZVTFindDirectMethod(cls, selector);
+    if (!direct) {
+        Method inherited = class_getInstanceMethod(cls, selector);
+        if (inherited && foundFlag) *foundFlag = YES;
+        return;
+    }
+    if (foundFlag) *foundFlag = YES;
+    const char *encoding = method_getTypeEncoding(direct);
+    if (!ZVTMethodIsVoidWithThreeObjectArguments(direct)) {
+        ZVTLog([NSString stringWithFormat:
+            @"UPLOAD_CALLBACK_HOOK_SKIPPED class=%@ selector=%@ reason=signature_mismatch encoding=%s",
+            NSStringFromClass(cls), NSStringFromSelector(selector), encoding ?: "?"]);
+        return;
+    }
+
+    NSString *key = ZVTCallbackKey(cls, selector);
+    @synchronized (ZVTCallbackOriginals()) {
+        if (ZVTCallbackOriginals()[key]) {
+            if (hookedFlag) *hookedFlag = YES;
+            return;
+        }
+        IMP original = method_setImplementation(direct, replacement);
+        if (!original) {
+            ZVTLog([NSString stringWithFormat:@"UPLOAD_CALLBACK_HOOK_FAILED class=%@ selector=%@",
+                    NSStringFromClass(cls), NSStringFromSelector(selector)]);
+            return;
+        }
+        ZVTCallbackOriginals()[key] = [NSValue valueWithPointer:original];
+    }
+    if (hookedFlag) *hookedFlag = YES;
+    ZVTLog([NSString stringWithFormat:
+        @"UPLOAD_CALLBACK_HOOK_INSTALLED class=%@ selector=%@ encoding=%s exact_abi=void_object_object_object",
+        NSStringFromClass(cls), NSStringFromSelector(selector), encoding ?: "?"]);
+}
+
+static void ZVTProbeUploadCallbacksForClass(Class cls) {
+    SEL success = sel_registerName("uploader:sessionConfiguration:didFinishWithFileLink:");
+    SEL failure = sel_registerName("uploader:sessionConfiguration:didFailWithError:");
+    ZVTInstallUploadCallbackForClass(cls, success, (IMP)ZVTUploadDidFinish,
+                                     &ZVTUploadSuccessCallbackFound, &ZVTUploadSuccessCallbackHooked);
+    ZVTInstallUploadCallbackForClass(cls, failure, (IMP)ZVTUploadDidFail,
+                                     &ZVTUploadFailureCallbackFound, &ZVTUploadFailureCallbackHooked);
+}
+
 static void ZVTAddVoice(id self, SEL cmd, id item, id link, BOOL uploading, long long source) {
     ZVTEvent([NSString stringWithFormat:@"ADD_VOICE itemClass=%@ itemPointer=%p fileLinkClass=%@ fileLinkPointer=%p uploading=%d source=%lld",
               ZVTClassName(item), item, ZVTClassName(link), link, uploading, source]);
@@ -593,6 +773,11 @@ static void ZVTScanRuntime(void) {
         NSString *name = [NSString stringWithUTF8String:class_getName(cls) ?: ""];
         if (!ZVTIsTargetClassName(name)) continue;
         matched++;
+        if ([name.lowercaseString containsString:@"voiceboardviewmodel"]) {
+            ZVTVoiceBoardViewModelFound = YES;
+            ZVTLog([NSString stringWithFormat:@"VOICE_BOARD_VIEW_MODEL_FOUND class=%@", name]);
+        }
+        ZVTProbeUploadCallbacksForClass(cls);
 
         BOOL shouldDump = NO;
         @synchronized (ZVTLoggedClasses()) {
@@ -623,6 +808,12 @@ static void ZVTScanAttempt(NSUInteger attempt) {
             ZVTLog([NSString stringWithFormat:@"SCAN_ATTEMPT %lu", (unsigned long)(attempt + 1)]);
             ZVTInstallCoreHooks();
             ZVTScanRuntime();
+            if (attempt == 4) {
+                ZVTLog([NSString stringWithFormat:
+                    @"V7_SCAN_SUMMARY viewModelFound=%d successCallbackFound=%d successCallbackHooked=%d failureCallbackFound=%d failureCallbackHooked=%d metadataOnly=YES broadLifecycleHooks=DISABLED",
+                    ZVTVoiceBoardViewModelFound, ZVTUploadSuccessCallbackFound, ZVTUploadSuccessCallbackHooked,
+                    ZVTUploadFailureCallbackFound, ZVTUploadFailureCallbackHooked]);
+            }
             if (attempt < 4) ZVTScanAttempt(attempt + 1);
         }
     });
@@ -633,8 +824,8 @@ void ZVTInstall(void) {
         if (ZVTInstalled) return;
         ZVTInstalled = YES;
     }
-    ZVTQueue = dispatch_queue_create("com.fadedrk.zolacn.voicetrace.v6", DISPATCH_QUEUE_SERIAL);
-    ZVTLog(@"START version=6 runtime_introspection_callstack_upload_lifecycle log=Library/Caches/ZolaVoiceTrace-v6.log");
+    ZVTQueue = dispatch_queue_create("com.fadedrk.zolacn.voicetrace.v7", DISPATCH_QUEUE_SERIAL);
+    ZVTLog(@"START version=7 targeted_viewmodel_upload_callbacks metadata_only=YES timezone=local log=Library/Caches/ZolaVoiceTrace-v7.log");
     ZVTScanAttempt(0);
 }
 

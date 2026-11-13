@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.4] — 2026-11-13
+
+### Added
+- V7 targeted tracing for VoiceBoardViewModel and upload completion/failure callbacks.
+- Exact Objective-C type-encoding validation before callback instrumentation.
+- UploadedVoiceLink getter inspection for fileId, aacLink, and originalLink when a validated completion callback fires.
+- Local-time timestamps in the voice trace log.
+
+### Safety
+- Kept Swift object introspection metadata-only; no instance ivar values are read.
+- Kept broad uploader lifecycle swizzling disabled.
+- Preserved the existing voice-pack send path and UI.
+
 ## [1.0.1] — 2026-10-01
 
 Final integrated release.
