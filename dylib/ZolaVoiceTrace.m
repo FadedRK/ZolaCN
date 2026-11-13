@@ -1577,7 +1577,7 @@ static void ZVTScanAttempt(NSUInteger attempt) {
             ZVTScanRuntime();
             if (attempt == 4) {
                 ZVTLog([NSString stringWithFormat:
-                    @"V7_3_SCAN_SUMMARY viewModelFound=%d viewModelStartHooked=%d audioItemInitHooked=%d onVoiceSendGetterHooked=%d sessionConfigurationInitHooked=%d successCallbackHooked=%d failureCallbackHooked=%d willChunkHooked=%d didChunkHooked=%d broadClassDump=DISABLED rawSwiftIvarReads=DISABLED",
+                    @"V7_4_SCAN_SUMMARY viewModelFound=%d viewModelStartHooked=%d audioItemInitHooked=%d onVoiceSendGetterHooked=%d sessionConfigurationInitHooked=%d successCallbackHooked=%d failureCallbackHooked=%d willChunkHooked=%d didChunkHooked=%d uiActionHooked=%d ivarPolicy=layout_bounded_pointer_no_deref",
                     ZVTVoiceBoardViewModelFound, ZVTViewModelStartHooked, ZVTAudioItemInitHooked,
                     ZVTOnVoiceSendGetterHooked, ZVTSessionConfigurationInitHooked,
                     ZVTUploadSuccessCallbackHooked, ZVTUploadFailureCallbackHooked,
