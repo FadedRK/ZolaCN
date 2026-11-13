@@ -221,6 +221,7 @@ static __attribute__((unused)) void ZVTDescribeObject(id object, NSString *label
               label, rootName, object]);
 
     for (Class cls = rootClass; cls; cls = class_getSuperclass(cls)) {
+        if (cls == NSObject.class || cls == NSDictionary.class) break;
         const char *className = class_getName(cls);
 
         unsigned int propertyCount = 0;
@@ -286,16 +287,16 @@ static Method ZVTFindDirectMethod(Class cls, SEL selector) {
 }
 
 static __attribute__((unused)) void ZVTDumpMethods(Class targetClass, BOOL classMethods) {
-    Class level = classMethods ? object_getClass(targetClass) : targetClass;
-    for (Class current = level; current; current = class_getSuperclass(current)) {
-        unsigned int count = 0;
-        Method *methods = class_copyMethodList(current, &count);
-        for (unsigned int i = 0; i < count; i++) {
-            SEL selector = method_getName(methods[i]);
-            const char *encoding = method_getTypeEncoding(methods[i]);
+    if (!targetClass || targetClass == NSObject.class || targetClass == NSDictionary.class) return;
+    Class level=classMethods?object_getClass(targetClass):targetClass;
+    Class objectMeta=object_getClass(NSObject.class),dictionaryMeta=object_getClass(NSDictionary.class);
+    for(Class current=level;current;current=class_getSuperclass(current)){
+        if(current==NSObject.class||current==NSDictionary.class||current==objectMeta||current==dictionaryMeta)break;
+        unsigned int count=0;Method *methods=class_copyMethodList(current,&count);
+        for(unsigned int i=0;i<count;i++){
+            SEL selector=method_getName(methods[i]);const char *encoding=method_getTypeEncoding(methods[i]);
             ZVTLog([NSString stringWithFormat:@"%@_METHOD owner=%s selector=%s type=%s",
-                    classMethods ? @"CLASS" : @"INSTANCE",
-                    class_getName(current) ?: "?", sel_getName(selector) ?: "?", encoding ?: "?"]);
+              classMethods?@"CLASS":@"INSTANCE",class_getName(current)?:"?",sel_getName(selector)?:"?",encoding?:"?"]);
         }
         free(methods);
     }
@@ -315,7 +316,8 @@ static __attribute__((unused)) BOOL ZVTIsDeepDumpClassName(NSString *name) {
 
 static __attribute__((unused)) void ZVTDumpClassLayout(Class targetClass) {
     if (!targetClass) return;
-    for (Class current = targetClass; current && current != NSObject.class;
+    for (Class current = targetClass; current &&
+         current != NSObject.class && current != NSDictionary.class;
          current = class_getSuperclass(current)) {
         const char *owner = class_getName(current) ?: "?";
         unsigned int ivarCount = 0;
