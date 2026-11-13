@@ -384,7 +384,7 @@ static NSString *ZVTArgumentDescription(Method method, NSUInteger index, uintptr
         id object = (__bridge id)(void *)rawValue;
         result = ZVTShortObjectValue(object);
     } else if (type && *type == '#') {
-        Class cls = (Class)(void *)rawValue;
+        Class cls = (__bridge Class)(void *)rawValue;
         result = cls ? [NSString stringWithFormat:@"Class(%s)", class_getName(cls)] : @"nil";
     } else if (type && *type == ':') {
         SEL value = (SEL)(void *)rawValue;
