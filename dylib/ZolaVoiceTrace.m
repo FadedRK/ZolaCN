@@ -1,110 +1,757 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <dispatch/dispatch.h>
+#import <stdint.h>
+#import <stdlib.h>
+#import <string.h>
+
+#pragma mark - V6 trace state
 
 static dispatch_queue_t ZVTQueue;
 static BOOL ZVTInstalled;
-static NSUInteger ZVTCount;
-static IMP OItemInit, OItemDuration, OItemSetDuration, OItemFileSize, OEntityDuration;
-static IMP OAddVoice, OUpdateVoice, OVMStart, OVMStopSend, OVMStopOverlay, OVMStopFocus;
+static NSUInteger ZVTEventCount;
+static IMP OAddVoice;
+static IMP OUpdateVoice;
 
-static void ZVTLog(NSString *s) {
-    if (!ZVTQueue) return;
+typedef id (*ZVTRetainedFn0)(id, SEL) __attribute__((ns_returns_retained));
+typedef id (*ZVTRetainedFn1)(id, SEL, uintptr_t) __attribute__((ns_returns_retained));
+typedef id (*ZVTRetainedFn2)(id, SEL, uintptr_t, uintptr_t) __attribute__((ns_returns_retained));
+typedef id (*ZVTRetainedFn3)(id, SEL, uintptr_t, uintptr_t, uintptr_t) __attribute__((ns_returns_retained));
+typedef id (*ZVTRetainedFn4)(id, SEL, uintptr_t, uintptr_t, uintptr_t, uintptr_t) __attribute__((ns_returns_retained));
+typedef id (*ZVTRetainedFn5)(id, SEL, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t) __attribute__((ns_returns_retained));
+typedef id (*ZVTRetainedFn6)(id, SEL, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t) __attribute__((ns_returns_retained));
+
+@interface ZVTProbeRecord : NSObject
+@property (nonatomic, assign) Class targetClass;
+@property (nonatomic, assign) SEL selector;
+@property (nonatomic, assign) IMP originalIMP;
+@property (nonatomic, assign) Method method;
+@property (nonatomic, assign) BOOL classMethod;
+@property (nonatomic, assign) NSUInteger explicitArgumentCount;
+@property (nonatomic, assign) BOOL objectReturn;
+@property (nonatomic, assign) BOOL voidReturn;
+@property (nonatomic, copy) NSString *typeEncoding;
+@end
+@implementation ZVTProbeRecord
+@end
+
+static NSMutableArray<ZVTProbeRecord *> *ZVTProbeRecords(void) {
+    static NSMutableArray<ZVTProbeRecord *> *records;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ records = [NSMutableArray array]; });
+    return records;
+}
+
+static NSMutableSet<NSString *> *ZVTLoggedClasses(void) {
+    static NSMutableSet<NSString *> *set;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ set = [NSMutableSet set]; });
+    return set;
+}
+
+static NSMutableSet<NSString *> *ZVTHookedMethods(void) {
+    static NSMutableSet<NSString *> *set;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ set = [NSMutableSet set]; });
+    return set;
+}
+
+#pragma mark - Logging
+
+static void ZVTLog(NSString *line) {
+    if (!ZVTQueue || !line.length) return;
     dispatch_async(ZVTQueue, ^{
-        NSString *path = [[[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask] firstObject]
-                          URLByAppendingPathComponent:@"ZolaVoiceTrace-v5.log"].path;
-        NSData *d = [[NSString stringWithFormat:@"%@ %@\n", [NSDate date], s] dataUsingEncoding:NSUTF8StringEncoding];
-        if (![[NSFileManager defaultManager] fileExistsAtPath:path])
-            [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
-        NSFileHandle *h = [NSFileHandle fileHandleForWritingAtPath:path];
-        if (h) { @try { [h seekToEndOfFile]; [h writeData:d]; } @catch (__unused NSException *e) {} @finally { [h closeFile]; } }
-    });
-}
-static void ZVTEvent(NSString *s) {
-    @synchronized ([NSObject class]) { if (ZVTCount++ >= 250) return; }
-    ZVTLog(s);
-}
-static NSString *ZVTClass(id x) { return x ? NSStringFromClass(object_getClass(x)) : @"nil"; }
-static void ZVTHook(Class c, SEL s, IMP repl, IMP *orig) {
-    if (!c) { ZVTLog([NSString stringWithFormat:@"CLASS_MISSING %@", NSStringFromSelector(s)]); return; }
-    unsigned int n=0; Method *ms=class_copyMethodList(c,&n); Method found=NULL;
-    for (unsigned int i=0;i<n;i++) if (method_getName(ms[i])==s) { found=ms[i]; break; }
-    free(ms);
-    if (!found) { ZVTLog([NSString stringWithFormat:@"METHOD_NOT_DIRECT %@ %@",NSStringFromClass(c),NSStringFromSelector(s)]); return; }
-    *orig=method_setImplementation(found,repl);
-    ZVTLog([NSString stringWithFormat:@"HOOK_READY %@ %@ %s",NSStringFromClass(c),NSStringFromSelector(s),method_getTypeEncoding(found)]);
-}
-static id ZVTItemInit(id self, SEL cmd, long long fileId, id mediaId, id clientId, id filePath) {
-    id r=((id(*)(id,SEL,long long,id,id,id))OItemInit)(self,cmd,fileId,mediaId,clientId,filePath);
-    ZVTEvent([NSString stringWithFormat:@"AUDIO_ITEM_INIT object=%p fileId=%lld mediaIdClass=%@ clientIdClass=%@",
-              r,fileId,ZVTClass(mediaId),ZVTClass(clientId)]);
-    return r;
-}
-static double ZVTItemDuration(id self, SEL cmd) {
-    double v=((double(*)(id,SEL))OItemDuration)(self,cmd);
-    ZVTEvent([NSString stringWithFormat:@"AUDIO_ITEM_DURATION object=%p seconds=%.3f",self,v]);
-    return v;
-}
-static void ZVTItemSetDuration(id self, SEL cmd, double v) {
-    ZVTEvent([NSString stringWithFormat:@"AUDIO_ITEM_SET_DURATION object=%p seconds=%.3f",self,v]);
-    ((void(*)(id,SEL,double))OItemSetDuration)(self,cmd,v);
-}
-static long long ZVTItemFileSize(id self, SEL cmd) {
-    long long v=((long long(*)(id,SEL))OItemFileSize)(self,cmd);
-    ZVTEvent([NSString stringWithFormat:@"AUDIO_ITEM_FILE_SIZE object=%p bytes=%lld",self,v]);
-    return v;
-}
-static double ZVTEntityDuration(id self, SEL cmd) {
-    double v=((double(*)(id,SEL))OEntityDuration)(self,cmd);
-    ZVTEvent([NSString stringWithFormat:@"CHAT_ENTITY_DURATION seconds=%.3f",v]);
-    return v;
-}
-static void ZVTAddVoice(id self, SEL cmd, id item, id link, BOOL uploading, long long source) {
-    ZVTEvent([NSString stringWithFormat:@"ADD_VOICE item=%@ uploading=%d source=%lld",ZVTClass(item),uploading,source]);
-    ((void(*)(id,SEL,id,id,BOOL,long long))OAddVoice)(self,cmd,item,link,uploading,source);
-}
-static void ZVTUpdateVoice(id self, SEL cmd, id entity) {
-    ZVTEvent([NSString stringWithFormat:@"UPDATE_VOICE_UI entity=%@",ZVTClass(entity)]);
-    ((void(*)(id,SEL,id))OUpdateVoice)(self,cmd,entity);
-}
-static void ZVTStart(id self, SEL cmd) {
-    ZVTEvent(@"RECORD_START");
-    ((void(*)(id,SEL))OVMStart)(self,cmd);
-}
-static void ZVTStopSend(id self, SEL cmd) {
-    ZVTEvent(@"RECORD_STOP_SEND");
-    ((void(*)(id,SEL))OVMStopSend)(self,cmd);
-}
-static void ZVTStopOverlay(id self, SEL cmd) {
-    ZVTEvent(@"RECORD_STOP_OVERLAY");
-    ((void(*)(id,SEL))OVMStopOverlay)(self,cmd);
-}
-static void ZVTStopFocus(id self, SEL cmd) {
-    ZVTEvent(@"RECORD_STOP_FOCUS");
-    ((void(*)(id,SEL))OVMStopFocus)(self,cmd);
-}
-void ZVTInstall(void) {
-    @synchronized ([NSObject class]) { if (ZVTInstalled) return; ZVTInstalled=YES; }
-    ZVTQueue=dispatch_queue_create("com.fadedrk.zolacn.voicetrace.v5",DISPATCH_QUEUE_SERIAL);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,6*NSEC_PER_SEC),dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
         @autoreleasepool {
-            ZVTLog(@"START version=5 focused_audio_duration");
-            Class item=NSClassFromString(@"CommFeatureBase.AudioItem");
-            Class entity=NSClassFromString(@"ChatEntity");
-            Class vm=NSClassFromString(@"CommFeatureBusiness.VoiceBoardViewModel");
-            Class chat=NSClassFromString(@"BaseChatTVC");
-            ZVTHook(item,sel_registerName("initWithFileId:mediaId:clientId:filePath:"),(IMP)ZVTItemInit,&OItemInit);
-            ZVTHook(item,sel_registerName("duration"),(IMP)ZVTItemDuration,&OItemDuration);
-            ZVTHook(item,sel_registerName("setDuration:"),(IMP)ZVTItemSetDuration,&OItemSetDuration);
-            ZVTHook(item,sel_registerName("fileSize"),(IMP)ZVTItemFileSize,&OItemFileSize);
-            ZVTHook(entity,sel_registerName("getDuration"),(IMP)ZVTEntityDuration,&OEntityDuration);
-            ZVTHook(chat,sel_registerName("addSendingVoiceWithAudioItem:fileLink:uploading:source:"),(IMP)ZVTAddVoice,&OAddVoice);
-            ZVTHook(chat,sel_registerName("updateUIAfterSendVoiceWithChatEntity:"),(IMP)ZVTUpdateVoice,&OUpdateVoice);
-            ZVTHook(vm,sel_registerName("startRecordFromChatBar"),(IMP)ZVTStart,&OVMStart);
-            ZVTHook(vm,sel_registerName("forceStopRecordingByTappingSend"),(IMP)ZVTStopSend,&OVMStopSend);
-            ZVTHook(vm,sel_registerName("forceStopRecordingWhenViewOverlay"),(IMP)ZVTStopOverlay,&OVMStopOverlay);
-            ZVTHook(vm,sel_registerName("forceStopRecordingByFocusingInput"),(IMP)ZVTStopFocus,&OVMStopFocus);
-            ZVTLog(@"END hooks_installed");
+            NSURL *cacheURL = [[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory
+                                                                       inDomains:NSUserDomainMask] firstObject];
+            NSString *path = [cacheURL URLByAppendingPathComponent:@"ZolaVoiceTrace-v6.log"].path;
+            NSString *entry = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], line];
+            NSData *data = [entry dataUsingEncoding:NSUTF8StringEncoding];
+            if (![[NSFileManager defaultManager] fileExistsAtPath:path])
+                [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
+            NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+            if (!handle) return;
+            @try {
+                [handle seekToEndOfFile];
+                [handle writeData:data];
+            } @catch (__unused NSException *exception) {
+            } @finally {
+                @try { [handle closeFile]; } @catch (__unused NSException *ignored) {}
+            }
         }
     });
+}
+
+static void ZVTEvent(NSString *line) {
+    @synchronized ([NSObject class]) {
+        if (ZVTEventCount >= 2500) return;
+        ZVTEventCount++;
+    }
+    ZVTLog(line);
+}
+
+static NSString *ZVTClassName(id object) {
+    if (!object) return @"nil";
+    Class cls = object_getClass(object);
+    NSString *runtimeName = cls ? NSStringFromClass(cls) : nil;
+    if (runtimeName.length) return runtimeName;
+    const char *name = cls ? class_getName(cls) : NULL;
+    return name ? [NSString stringWithUTF8String:name] : @"<unknown-class>";
+}
+
+static NSString *ZVTSanitizedURLString(NSString *string) {
+    NSURLComponents *components = [NSURLComponents componentsWithString:string];
+    if (components.scheme.length && components.host.length) {
+        components.query = nil;
+        components.fragment = nil;
+        return components.string ?: string;
+    }
+    return string;
+}
+
+static NSString *ZVTShortObjectValue(id value) {
+    if (!value) return @"nil";
+    NSString *className = ZVTClassName(value);
+    if ([value isKindOfClass:NSString.class]) {
+        NSString *string = ZVTSanitizedURLString((NSString *)value);
+        if (string.length > 240) string = [[string substringToIndex:240] stringByAppendingString:@"…"];
+        return [NSString stringWithFormat:@"%@(%@)", className, string];
+    }
+    if ([value isKindOfClass:NSURL.class]) {
+        return [NSString stringWithFormat:@"%@(%@)", className,
+                ZVTSanitizedURLString([(NSURL *)value absoluteString] ?: @"")];
+    }
+    if ([value isKindOfClass:NSNumber.class])
+        return [NSString stringWithFormat:@"%@(%@)", className, [(NSNumber *)value stringValue]];
+    if ([value isKindOfClass:NSDate.class])
+        return [NSString stringWithFormat:@"%@(%@)", className, value];
+    if ([value isKindOfClass:NSData.class])
+        return [NSString stringWithFormat:@"%@(%lu bytes)", className, (unsigned long)[(NSData *)value length]];
+    if ([value isKindOfClass:NSArray.class])
+        return [NSString stringWithFormat:@"%@(%lu items)", className, (unsigned long)[(NSArray *)value count]];
+    if ([value isKindOfClass:NSDictionary.class])
+        return [NSString stringWithFormat:@"%@(%lu keys)", className, (unsigned long)[(NSDictionary *)value count]];
+    return [NSString stringWithFormat:@"%@(%p)", className, value];
+}
+
+static BOOL ZVTIsSensitiveFieldName(NSString *name) {
+    NSString *lower = name.lowercaseString;
+    NSArray<NSString *> *needles = @[@"password", @"passwd", @"secret", @"token",
+                                     @"authorization", @"cookie", @"sessionkey",
+                                     @"cryptkey", @"privatekey", @"apikey", @"auth"];
+    for (NSString *needle in needles) if ([lower containsString:needle]) return YES;
+    return NO;
+}
+
+static BOOL ZVTIsRelevantEntityField(NSString *name) {
+    NSString *lower = name.lowercaseString;
+    NSArray<NSString *> *needles = @[@"voice", @"audio", @"media", @"file", @"upload",
+                                     @"url", @"link", @"duration", @"message", @"msg",
+                                     @"status", @"state", @"id", @"path", @"local", @"server",
+                                     @"cdn", @"wave", @"progress", @"size", @"type", @"send", @"time"];
+    for (NSString *needle in needles) if ([lower containsString:needle]) return YES;
+    return NO;
+}
+
+static const char *ZVTUnqualifiedType(const char *type) {
+    if (!type) return "";
+    while (*type == 'r' || *type == 'n' || *type == 'N' || *type == 'o' ||
+           *type == 'O' || *type == 'R' || *type == 'V') type++;
+    return type;
+}
+
+static NSString *ZVTReadIvarValue(id object, Ivar ivar, NSString *name) {
+    if (!object || !ivar) return @"<nil-object>";
+    if (ZVTIsSensitiveFieldName(name)) return @"<redacted-sensitive-field>";
+    const char *rawType = ivar_getTypeEncoding(ivar);
+    const char *type = ZVTUnqualifiedType(rawType);
+    if (!type || !*type) return @"<unknown-type>";
+
+    if (*type == '@') {
+        id value = object_getIvar(object, ivar);
+        return value ? ZVTShortObjectValue(value) : @"nil";
+    }
+
+    ptrdiff_t offset = ivar_getOffset(ivar);
+    const uint8_t *base = (const uint8_t *)(__bridge const void *)object;
+    const uint8_t *address = base + offset;
+    switch (*type) {
+        case '#': {
+            Class value = Nil;
+            memcpy(&value, address, sizeof(value));
+            return value ? [NSString stringWithFormat:@"Class(%s)", class_getName(value)] : @"nil";
+        }
+        case ':': {
+            SEL value = NULL;
+            memcpy(&value, address, sizeof(value));
+            return value ? [NSString stringWithFormat:@"SEL(%s)", sel_getName(value)] : @"nil";
+        }
+        case '^':
+        case '*': {
+            void *value = NULL;
+            memcpy(&value, address, sizeof(value));
+            return value ? [NSString stringWithFormat:@"pointer(%p)", value] : @"nil";
+        }
+        case 'B': { BOOL v=NO; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"BOOL(%d)",v]; }
+        case 'c': { signed char v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"int8(%d)",v]; }
+        case 'C': { unsigned char v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"uint8(%u)",v]; }
+        case 's': { short v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"int16(%d)",v]; }
+        case 'S': { unsigned short v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"uint16(%u)",v]; }
+        case 'i': { int v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"int32(%d)",v]; }
+        case 'I': { unsigned int v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"uint32(%u)",v]; }
+        case 'l': { long v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"long(%ld)",v]; }
+        case 'L': { unsigned long v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"ulong(%lu)",v]; }
+        case 'q': { long long v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"int64(%lld)",v]; }
+        case 'Q': { unsigned long long v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"uint64(%llu)",v]; }
+        case 'f': { float v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"float(%.6f)",v]; }
+        case 'd': { double v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"double(%.9f)",v]; }
+        default:
+            return [NSString stringWithFormat:@"<non-scalar type %s>", type];
+    }
+}
+
+static void ZVTDescribeObject(id object, NSString *label, BOOL entityFilter) {
+    if (!object) {
+        ZVTEvent([NSString stringWithFormat:@"OBJECT %@ class=nil pointer=nil", label]);
+        return;
+    }
+    Class rootClass = object_getClass(object);
+    NSString *rootName = rootClass ? [NSString stringWithUTF8String:class_getName(rootClass)] : @"<unknown>";
+    ZVTEvent([NSString stringWithFormat:@"OBJECT %@ class=%@ pointer=%p summary=%@",
+              label, rootName, object, ZVTShortObjectValue(object)]);
+
+    // Foundation value objects (including tagged NSString/NSNumber instances) are
+    // summarized directly; reading their private ivar layouts is not portable.
+    if ([object isKindOfClass:NSString.class] || [object isKindOfClass:NSNumber.class] ||
+        [object isKindOfClass:NSURL.class] || [object isKindOfClass:NSData.class] ||
+        [object isKindOfClass:NSDate.class] || [object isKindOfClass:NSArray.class] ||
+        [object isKindOfClass:NSDictionary.class]) {
+        ZVTEvent([NSString stringWithFormat:@"OBJECT %@ FOUNDATION_VALUE_OBJECT details=summary_only", label]);
+        return;
+    }
+
+    for (Class cls = rootClass; cls; cls = class_getSuperclass(cls)) {
+        const char *className = class_getName(cls);
+        unsigned int propertyCount = 0;
+        objc_property_t *properties = class_copyPropertyList(cls, &propertyCount);
+        for (unsigned int i = 0; i < propertyCount; i++) {
+            const char *rawName = property_getName(properties[i]);
+            if (!rawName) continue;
+            NSString *name = [NSString stringWithUTF8String:rawName];
+            if (entityFilter && !ZVTIsRelevantEntityField(name)) continue;
+            if (ZVTIsSensitiveFieldName(name)) continue;
+            const char *attributes = property_getAttributes(properties[i]);
+            NSString *backing = @"<none>";
+            if (attributes) {
+                const char *v = strstr(attributes, ",V");
+                if (v && *(v + 2)) backing = [NSString stringWithUTF8String:v + 2] ?: @"<unknown>";
+            }
+            ZVTEvent([NSString stringWithFormat:@"PROPERTY %@ owner=%s name=%@ attributes=%s backingIvar=%@",
+                      label, className ?: "?", name, attributes ?: "", backing]);
+        }
+        free(properties);
+
+        unsigned int ivarCount = 0;
+        Ivar *ivars = class_copyIvarList(cls, &ivarCount);
+        for (unsigned int i = 0; i < ivarCount; i++) {
+            const char *rawName = ivar_getName(ivars[i]);
+            if (!rawName) continue;
+            NSString *name = [NSString stringWithUTF8String:rawName];
+            if (entityFilter && !ZVTIsRelevantEntityField(name)) continue;
+            NSString *value = ZVTReadIvarValue(object, ivars[i], name);
+            if ([value isEqualToString:@"nil"]) continue;
+            ZVTEvent([NSString stringWithFormat:@"IVAR %@ owner=%s name=%@ type=%s value=%@",
+                      label, className ?: "?", name,
+                      ivar_getTypeEncoding(ivars[i]) ?: "?", value ?: @"<nil>"]);
+        }
+        free(ivars);
+    }
+}
+
+#pragma mark - Runtime class and method discovery
+
+static BOOL ZVTIsTargetClassName(NSString *name) {
+    NSString *lower = name.lowercaseString;
+    BOOL voiceUpload = [lower containsString:@"voice"] && [lower containsString:@"upload"];
+    BOOL audioUpload = [lower containsString:@"audio"] && [lower containsString:@"upload"];
+    BOOL namedLink = [lower containsString:@"uploadedvoicelink"];
+    BOOL namedUploader = [lower containsString:@"voicecontinuousuploader"];
+    return voiceUpload || audioUpload || namedLink || namedUploader;
+}
+
+static BOOL ZVTSelectorLooksLikeLifecycle(NSString *selectorName) {
+    NSString *lower = selectorName.lowercaseString;
+    NSArray<NSString *> *needles = @[@"init", @"start", @"begin", @"upload", @"progress",
+                                     @"complete", @"finish", @"success", @"failure", @"failed",
+                                     @"error", @"callback", @"handler", @"response", @"link",
+                                     @"cancel", @"resume", @"retry", @"send", @"stop", @"result", @"done"];
+    for (NSString *needle in needles) if ([lower containsString:needle]) return YES;
+    return NO;
+}
+
+static Method ZVTFindDirectMethod(Class cls, SEL selector) {
+    if (!cls || !selector) return NULL;
+    unsigned int count = 0;
+    Method *methods = class_copyMethodList(cls, &count);
+    Method found = NULL;
+    for (unsigned int i = 0; i < count; i++) {
+        if (method_getName(methods[i]) == selector) { found = methods[i]; break; }
+    }
+    free(methods);
+    return found;
+}
+
+static void ZVTDumpMethods(Class targetClass, BOOL classMethods) {
+    Class level = classMethods ? object_getClass(targetClass) : targetClass;
+    for (Class current = level; current; current = class_getSuperclass(current)) {
+        unsigned int count = 0;
+        Method *methods = class_copyMethodList(current, &count);
+        for (unsigned int i = 0; i < count; i++) {
+            SEL selector = method_getName(methods[i]);
+            const char *encoding = method_getTypeEncoding(methods[i]);
+            ZVTLog([NSString stringWithFormat:@"%@_METHOD owner=%s selector=%s type=%s",
+                    classMethods ? @"CLASS" : @"INSTANCE",
+                    class_getName(current) ?: "?", sel_getName(selector) ?: "?", encoding ?: "?"]);
+        }
+        free(methods);
+    }
+}
+
+static BOOL ZVTIsAllowedScalarType(const char *rawType) {
+    char code = *ZVTUnqualifiedType(rawType);
+    return code == 'c' || code == 'C' || code == 's' || code == 'S' ||
+           code == 'i' || code == 'I' || code == 'l' || code == 'L' ||
+           code == 'q' || code == 'Q' || code == 'B' || code == '#' ||
+           code == ':' || code == '^' || code == '*';
+}
+
+static BOOL ZVTMethodHasSafeForwardingSignature(Method method, NSUInteger *explicitCount,
+                                                 BOOL *objectReturn, BOOL *voidReturn) {
+    if (!method) return NO;
+    unsigned int total = method_getNumberOfArguments(method);
+    if (total < 2 || total > 8) return NO; // self + _cmd + no more than six register arguments
+
+    char *returnType = method_copyReturnType(method);
+    const char *r = ZVTUnqualifiedType(returnType);
+    BOOL isObject = (r && *r == '@');
+    BOOL isVoid = (r && *r == 'v');
+    BOOL safeReturn = isObject || isVoid || ZVTIsAllowedScalarType(r);
+    free(returnType);
+    if (!safeReturn) return NO;
+
+    for (unsigned int i = 2; i < total; i++) {
+        char *argumentType = method_copyArgumentType(method, i);
+        const char *a = ZVTUnqualifiedType(argumentType);
+        BOOL safeArgument = a && (*a == '@' || *a == '#' || *a == ':' ||
+                                  *a == '^' || *a == '*' ||
+                                  *a == 'c' || *a == 'C' || *a == 's' || *a == 'S' ||
+                                  *a == 'i' || *a == 'I' || *a == 'l' || *a == 'L' ||
+                                  *a == 'q' || *a == 'Q' || *a == 'B');
+        free(argumentType);
+        if (!safeArgument) return NO;
+    }
+    if (explicitCount) *explicitCount = total - 2;
+    if (objectReturn) *objectReturn = isObject;
+    if (voidReturn) *voidReturn = isVoid;
+    return YES;
+}
+
+static ZVTProbeRecord *ZVTRecordForInvocation(id receiver, SEL selector) {
+    if (!receiver || !selector) return nil;
+    BOOL isClassMethod = class_isMetaClass(object_getClass(receiver));
+    Class current = isClassMethod ? (Class)receiver : object_getClass(receiver);
+    @synchronized (ZVTProbeRecords()) {
+        for (Class cls = current; cls; cls = class_getSuperclass(cls)) {
+            for (ZVTProbeRecord *record in ZVTProbeRecords()) {
+                if (record.targetClass == cls && record.selector == selector &&
+                    record.classMethod == isClassMethod) return record;
+            }
+        }
+    }
+    return nil;
+}
+
+static IMP ZVTOriginalForInvocation(id receiver, SEL selector) {
+    return ZVTRecordForInvocation(receiver, selector).originalIMP;
+}
+
+static NSString *ZVTArgumentDescription(Method method, NSUInteger index, uintptr_t rawValue) {
+    char *argumentType = method_copyArgumentType(method, (unsigned int)index + 2);
+    const char *type = ZVTUnqualifiedType(argumentType);
+    NSString *result = nil;
+    if (type && *type == '@') {
+        id object = (__bridge id)(void *)rawValue;
+        result = ZVTShortObjectValue(object);
+    } else if (type && *type == '#') {
+        Class cls = (Class)(void *)rawValue;
+        result = cls ? [NSString stringWithFormat:@"Class(%s)", class_getName(cls)] : @"nil";
+    } else if (type && *type == ':') {
+        SEL value = (SEL)(void *)rawValue;
+        result = value ? [NSString stringWithFormat:@"SEL(%s)", sel_getName(value)] : @"nil";
+    } else {
+        result = [NSString stringWithFormat:@"%s(0x%llx)", type ?: "?", (unsigned long long)rawValue];
+    }
+    free(argumentType);
+    return result ?: @"<unavailable>";
+}
+
+static void ZVTProbeBegin(id receiver, SEL selector, NSUInteger count, const uintptr_t *arguments) {
+    ZVTProbeRecord *record = ZVTRecordForInvocation(receiver, selector);
+    if (!record) {
+        ZVTEvent([NSString stringWithFormat:@"LIFECYCLE_BEGIN record_missing receiver=%@ selector=%s",
+                  ZVTClassName(receiver), sel_getName(selector)]);
+        return;
+    }
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    for (NSUInteger i = 0; i < count; i++) {
+        [parts addObject:[NSString stringWithFormat:@"arg%lu=%@", (unsigned long)i,
+                          ZVTArgumentDescription(record.method, i, arguments[i])]];
+    }
+    ZVTEvent([NSString stringWithFormat:@"LIFECYCLE_BEGIN %@ %@ receiver=%p %@ args=[%@]",
+              record.classMethod ? @"+" : @"-", NSStringFromClass(record.targetClass), receiver,
+              NSStringFromSelector(selector), [parts componentsJoinedByString:@", "]]);
+}
+
+static void ZVTProbeEnd(id receiver, SEL selector, NSString *returnValue) {
+    ZVTProbeRecord *record = ZVTRecordForInvocation(receiver, selector);
+    ZVTEvent([NSString stringWithFormat:@"LIFECYCLE_END %@ selector=%@ return=%@",
+              record ? NSStringFromClass(record.targetClass) : ZVTClassName(receiver),
+              NSStringFromSelector(selector), returnValue ?: @"void"]);
+}
+
+#pragma mark - ABI-safe lifecycle wrappers
+
+#define ZVT_PARAM_0
+#define ZVT_PARAM_1 , uintptr_t a1
+#define ZVT_PARAM_2 , uintptr_t a1, uintptr_t a2
+#define ZVT_PARAM_3 , uintptr_t a1, uintptr_t a2, uintptr_t a3
+#define ZVT_PARAM_4 , uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4
+#define ZVT_PARAM_5 , uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4, uintptr_t a5
+#define ZVT_PARAM_6 , uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6
+#define ZVT_TYPE_0
+#define ZVT_TYPE_1 , uintptr_t
+#define ZVT_TYPE_2 , uintptr_t, uintptr_t
+#define ZVT_TYPE_3 , uintptr_t, uintptr_t, uintptr_t
+#define ZVT_TYPE_4 , uintptr_t, uintptr_t, uintptr_t, uintptr_t
+#define ZVT_TYPE_5 , uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t
+#define ZVT_TYPE_6 , uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t
+#define ZVT_VALUES_0
+#define ZVT_VALUES_1 , a1
+#define ZVT_VALUES_2 , a1, a2
+#define ZVT_VALUES_3 , a1, a2, a3
+#define ZVT_VALUES_4 , a1, a2, a3, a4
+#define ZVT_VALUES_5 , a1, a2, a3, a4, a5
+#define ZVT_VALUES_6 , a1, a2, a3, a4, a5, a6
+#define ZVT_ARRAY_0 { 0 }
+#define ZVT_ARRAY_1 { a1 }
+#define ZVT_ARRAY_2 { a1, a2 }
+#define ZVT_ARRAY_3 { a1, a2, a3 }
+#define ZVT_ARRAY_4 { a1, a2, a3, a4 }
+#define ZVT_ARRAY_5 { a1, a2, a3, a4, a5 }
+#define ZVT_ARRAY_6 { a1, a2, a3, a4, a5, a6 }
+
+#define ZVT_DEFINE_WRAPPERS(N) \
+static void ZVTVoid##N(id self, SEL cmd ZVT_PARAM_##N) { \
+    uintptr_t values[6] = ZVT_ARRAY_##N; ZVTProbeBegin(self, cmd, N, values); \
+    IMP original = ZVTOriginalForInvocation(self, cmd); \
+    if (original) ((void (*)(id, SEL ZVT_TYPE_##N))original)(self, cmd ZVT_VALUES_##N); \
+    ZVTProbeEnd(self, cmd, @"void"); \
+} \
+static id ZVTObject##N(id self, SEL cmd ZVT_PARAM_##N) { \
+    uintptr_t values[6] = ZVT_ARRAY_##N; ZVTProbeBegin(self, cmd, N, values); \
+    IMP original = ZVTOriginalForInvocation(self, cmd); \
+    id result = original ? ((id (*)(id, SEL ZVT_TYPE_##N))original)(self, cmd ZVT_VALUES_##N) : nil; \
+    ZVTProbeEnd(self, cmd, ZVTShortObjectValue(result)); return result; \
+} \
+static id ZVTObjectRetained##N(id self, SEL cmd ZVT_PARAM_##N) __attribute__((ns_returns_retained)); \
+static id ZVTObjectRetained##N(id self, SEL cmd ZVT_PARAM_##N) { \
+    uintptr_t values[6] = ZVT_ARRAY_##N; ZVTProbeBegin(self, cmd, N, values); \
+    IMP original = ZVTOriginalForInvocation(self, cmd); \
+    ZVTRetainedFn##N originalFunction = (ZVTRetainedFn##N)original; \
+    id result = original ? originalFunction(self, cmd ZVT_VALUES_##N) : nil; \
+    ZVTProbeEnd(self, cmd, ZVTShortObjectValue(result)); return result; \
+} \
+static uintptr_t ZVTScalar##N(id self, SEL cmd ZVT_PARAM_##N) { \
+    uintptr_t values[6] = ZVT_ARRAY_##N; ZVTProbeBegin(self, cmd, N, values); \
+    IMP original = ZVTOriginalForInvocation(self, cmd); \
+    uintptr_t result = original ? ((uintptr_t (*)(id, SEL ZVT_TYPE_##N))original)(self, cmd ZVT_VALUES_##N) : 0; \
+    ZVTProbeEnd(self, cmd, [NSString stringWithFormat:@"0x%llx", (unsigned long long)result]); return result; \
+}
+
+ZVT_DEFINE_WRAPPERS(0)
+ZVT_DEFINE_WRAPPERS(1)
+ZVT_DEFINE_WRAPPERS(2)
+ZVT_DEFINE_WRAPPERS(3)
+ZVT_DEFINE_WRAPPERS(4)
+ZVT_DEFINE_WRAPPERS(5)
+ZVT_DEFINE_WRAPPERS(6)
+
+static BOOL ZVTHasMethodFamilyPrefix(NSString *name, NSString *prefix) {
+    if (![name hasPrefix:prefix]) return NO;
+    if (name.length == prefix.length) return YES;
+    unichar next = [name characterAtIndex:prefix.length];
+    return ![[NSCharacterSet lowercaseLetterCharacterSet] characterIsMember:next];
+}
+
+static BOOL ZVTSelectorHasRetainedReturnFamily(SEL selector) {
+    NSString *name = NSStringFromSelector(selector);
+    return ZVTHasMethodFamilyPrefix(name, @"init") || ZVTHasMethodFamilyPrefix(name, @"new") ||
+           ZVTHasMethodFamilyPrefix(name, @"copy") || ZVTHasMethodFamilyPrefix(name, @"mutableCopy");
+}
+
+static IMP ZVTWrapperForMethod(Method method, SEL selector) {
+    NSUInteger argumentCount = 0;
+    BOOL objectReturn = NO, voidReturn = NO;
+    if (!ZVTMethodHasSafeForwardingSignature(method, &argumentCount, &objectReturn, &voidReturn)) return NULL;
+    static IMP voidWrappers[] = {(IMP)ZVTVoid0,(IMP)ZVTVoid1,(IMP)ZVTVoid2,(IMP)ZVTVoid3,(IMP)ZVTVoid4,(IMP)ZVTVoid5,(IMP)ZVTVoid6};
+    static IMP objectWrappers[] = {(IMP)ZVTObject0,(IMP)ZVTObject1,(IMP)ZVTObject2,(IMP)ZVTObject3,(IMP)ZVTObject4,(IMP)ZVTObject5,(IMP)ZVTObject6};
+    static IMP retainedObjectWrappers[] = {(IMP)ZVTObjectRetained0,(IMP)ZVTObjectRetained1,(IMP)ZVTObjectRetained2,(IMP)ZVTObjectRetained3,(IMP)ZVTObjectRetained4,(IMP)ZVTObjectRetained5,(IMP)ZVTObjectRetained6};
+    static IMP scalarWrappers[] = {(IMP)ZVTScalar0,(IMP)ZVTScalar1,(IMP)ZVTScalar2,(IMP)ZVTScalar3,(IMP)ZVTScalar4,(IMP)ZVTScalar5,(IMP)ZVTScalar6};
+    if (argumentCount > 6) return NULL;
+    if (voidReturn) return voidWrappers[argumentCount];
+    if (objectReturn) return ZVTSelectorHasRetainedReturnFamily(selector) ? retainedObjectWrappers[argumentCount] : objectWrappers[argumentCount];
+    return scalarWrappers[argumentCount];
+}
+
+static NSString *ZVTHookKey(Class cls, SEL selector, BOOL classMethod) {
+    return [NSString stringWithFormat:@"%p|%@|%@", cls,
+            classMethod ? @"+" : @"-", NSStringFromSelector(selector)];
+}
+
+static void ZVTInstallLifecycleHooksForClass(Class targetClass, BOOL classMethod) {
+    Class dispatchClass = classMethod ? object_getClass(targetClass) : targetClass;
+    if (!dispatchClass) return;
+
+    NSMutableSet<NSString *> *candidateNames = [NSMutableSet set];
+    for (Class current = dispatchClass; current; current = class_getSuperclass(current)) {
+        unsigned int count = 0;
+        Method *methods = class_copyMethodList(current, &count);
+        for (unsigned int i = 0; i < count; i++) {
+            NSString *name = NSStringFromSelector(method_getName(methods[i]));
+            if (ZVTSelectorLooksLikeLifecycle(name)) [candidateNames addObject:name];
+        }
+        free(methods);
+    }
+
+    for (NSString *name in candidateNames) {
+        SEL selector = NSSelectorFromString(name);
+        NSString *key = ZVTHookKey(targetClass, selector, classMethod);
+        @synchronized (ZVTHookedMethods()) {
+            if ([ZVTHookedMethods() containsObject:key]) continue;
+        }
+        Method resolved = class_getInstanceMethod(dispatchClass, selector);
+        if (!resolved) continue;
+        NSUInteger explicitCount = 0;
+        BOOL objectReturn = NO, voidReturn = NO;
+        if (!ZVTMethodHasSafeForwardingSignature(resolved, &explicitCount, &objectReturn, &voidReturn)) {
+            ZVTLog([NSString stringWithFormat:@"HOOK_SKIPPED_UNSAFE %@ %@%@ type=%s",
+                    NSStringFromClass(targetClass), classMethod ? @"+" : @"-", name,
+                    method_getTypeEncoding(resolved) ?: "?"]);
+            continue;
+        }
+        IMP wrapper = ZVTWrapperForMethod(resolved, selector);
+        if (!wrapper) continue;
+
+        ZVTProbeRecord *record = [ZVTProbeRecord new];
+        record.targetClass = targetClass;
+        record.selector = selector;
+        record.method = resolved;
+        record.classMethod = classMethod;
+        record.explicitArgumentCount = explicitCount;
+        record.objectReturn = objectReturn;
+        record.voidReturn = voidReturn;
+        record.typeEncoding = [NSString stringWithUTF8String:method_getTypeEncoding(resolved) ?: ""];
+        record.originalIMP = method_getImplementation(resolved);
+        if (!record.originalIMP) continue;
+
+        @synchronized (ZVTProbeRecords()) { [ZVTProbeRecords() addObject:record]; }
+        Method direct = ZVTFindDirectMethod(dispatchClass, selector);
+        BOOL installed = NO;
+        if (direct) {
+            record.originalIMP = method_setImplementation(direct, wrapper);
+            installed = record.originalIMP != NULL;
+        } else {
+            installed = class_addMethod(dispatchClass, selector, wrapper, method_getTypeEncoding(resolved));
+            if (!installed) {
+                direct = ZVTFindDirectMethod(dispatchClass, selector);
+                if (direct) {
+                    record.originalIMP = method_setImplementation(direct, wrapper);
+                    installed = record.originalIMP != NULL;
+                }
+            }
+        }
+        if (!installed) {
+            @synchronized (ZVTProbeRecords()) { [ZVTProbeRecords() removeObject:record]; }
+            ZVTLog([NSString stringWithFormat:@"HOOK_FAILED %@ %@%@", NSStringFromClass(targetClass), classMethod ? @"+" : @"-", name]);
+        } else {
+            @synchronized (ZVTHookedMethods()) { [ZVTHookedMethods() addObject:key]; }
+            ZVTLog([NSString stringWithFormat:@"HOOK_READY %@ %@%@ type=%@ args=%lu",
+                    NSStringFromClass(targetClass), classMethod ? @"+" : @"-", name,
+                    record.typeEncoding, (unsigned long)explicitCount]);
+        }
+    }
+}
+
+#pragma mark - Core chat voice probes
+
+static BOOL ZVTIsVoidMethodWithArguments(Method method, unsigned int expectedCount) {
+    if (!method || method_getNumberOfArguments(method) != expectedCount) return NO;
+    char *returnType = method_copyReturnType(method);
+    BOOL isVoid = *ZVTUnqualifiedType(returnType) == 'v';
+    free(returnType);
+    return isVoid;
+}
+
+static BOOL ZVTArgumentHasCode(Method method, unsigned int index, const char *allowedCodes) {
+    char *argumentType = method_copyArgumentType(method, index);
+    const char *type = ZVTUnqualifiedType(argumentType);
+    BOOL matches = type && strchr(allowedCodes, *type) != NULL;
+    free(argumentType);
+    return matches;
+}
+
+static Class ZVTResolveClassByShortName(NSString *shortName) {
+    unsigned int count = 0;
+    Class *classes = objc_copyClassList(&count);
+    Class match = Nil;
+    NSString *suffix = [@"." stringByAppendingString:shortName];
+    for (unsigned int i = 0; i < count; i++) {
+        NSString *name = [NSString stringWithUTF8String:class_getName(classes[i]) ?: ""];
+        if ([name isEqualToString:shortName] || [name hasSuffix:suffix]) { match = classes[i]; break; }
+    }
+    free(classes);
+    return match;
+}
+
+static void ZVTAddVoice(id self, SEL cmd, id item, id link, BOOL uploading, long long source) {
+    ZVTEvent([NSString stringWithFormat:@"ADD_VOICE itemClass=%@ itemPointer=%p fileLinkClass=%@ fileLinkPointer=%p uploading=%d source=%lld",
+              ZVTClassName(item), item, ZVTClassName(link), link, uploading, source]);
+
+    NSArray<NSString *> *stack = [NSThread callStackSymbols];
+    NSUInteger frames = MIN((NSUInteger)8, stack.count);
+    ZVTEvent([NSString stringWithFormat:@"ADD_VOICE_CALLSTACK frames=%lu", (unsigned long)frames]);
+    for (NSUInteger i = 0; i < frames; i++)
+        ZVTLog([NSString stringWithFormat:@"CALLSTACK[%lu] %@", (unsigned long)i, stack[i]]);
+
+    ZVTDescribeObject(item, @"audioItem", NO);
+    ZVTDescribeObject(link, @"fileLink", NO);
+    ((void (*)(id, SEL, id, id, BOOL, long long))OAddVoice)(self, cmd, item, link, uploading, source);
+}
+
+static void ZVTUpdateVoice(id self, SEL cmd, id entity) {
+    ZVTEvent([NSString stringWithFormat:@"UPDATE_VOICE_UI entityClass=%@ entityPointer=%p", ZVTClassName(entity), entity]);
+    ZVTDescribeObject(entity, @"ChatEntity", YES);
+    ((void (*)(id, SEL, id))OUpdateVoice)(self, cmd, entity);
+}
+
+static void ZVTInstallCoreHook(Class chatClass, SEL selector, IMP replacement, IMP *original,
+                               unsigned int expectedArgumentCount, NSString *label) {
+    if (!chatClass || *original) return;
+    Method method = class_getInstanceMethod(chatClass, selector);
+    if (!method || !ZVTIsVoidMethodWithArguments(method, expectedArgumentCount)) {
+        ZVTLog([NSString stringWithFormat:@"CORE_HOOK_SKIPPED %@ method_missing_or_signature_changed", label]);
+        return;
+    }
+    const char *encoding = method_getTypeEncoding(method);
+    Method direct = ZVTFindDirectMethod(chatClass, selector);
+    if (direct) {
+        *original = method_setImplementation(direct, replacement);
+    } else if (class_addMethod(chatClass, selector, replacement, encoding)) {
+        *original = method_getImplementation(method);
+    } else {
+        direct = ZVTFindDirectMethod(chatClass, selector);
+        if (direct) *original = method_setImplementation(direct, replacement);
+    }
+    ZVTLog([NSString stringWithFormat:@"%@ %@ encoding=%s installed=%d chainedPrevious=%p",
+            label, NSStringFromClass(chatClass), encoding ?: "?", *original != NULL, *original]);
+}
+
+static void ZVTInstallCoreHooks(void) {
+    Class chatClass = ZVTResolveClassByShortName(@"BaseChatTVC");
+    if (!chatClass) {
+        ZVTLog(@"CORE_CLASS_NOT_FOUND BaseChatTVC");
+        return;
+    }
+    SEL addSelector = sel_registerName("addSendingVoiceWithAudioItem:fileLink:uploading:source:");
+    Method addMethod = class_getInstanceMethod(chatClass, addSelector);
+    BOOL addSignatureOK = ZVTIsVoidMethodWithArguments(addMethod, 6) &&
+                          ZVTArgumentHasCode(addMethod, 2, "@") &&
+                          ZVTArgumentHasCode(addMethod, 3, "@") &&
+                          ZVTArgumentHasCode(addMethod, 4, "BcC") &&
+                          ZVTArgumentHasCode(addMethod, 5, "qQlL");
+    if (addSignatureOK)
+        ZVTInstallCoreHook(chatClass, addSelector, (IMP)ZVTAddVoice, &OAddVoice, 6, @"CORE_ADD_VOICE_HOOK");
+    else
+        ZVTLog(@"CORE_HOOK_SKIPPED ADD_VOICE signature_mismatch");
+
+    SEL updateSelector = sel_registerName("updateUIAfterSendVoiceWithChatEntity:");
+    Method updateMethod = class_getInstanceMethod(chatClass, updateSelector);
+    BOOL updateSignatureOK = ZVTIsVoidMethodWithArguments(updateMethod, 3) &&
+                             ZVTArgumentHasCode(updateMethod, 2, "@");
+    if (updateSignatureOK)
+        ZVTInstallCoreHook(chatClass, updateSelector, (IMP)ZVTUpdateVoice, &OUpdateVoice, 3, @"CORE_UPDATE_VOICE_HOOK");
+    else
+        ZVTLog(@"CORE_HOOK_SKIPPED UPDATE_VOICE signature_mismatch");
+}
+
+#pragma mark - Scan and bootstrap
+
+static void ZVTScanRuntime(void) {
+    unsigned int count = 0;
+    Class *classes = objc_copyClassList(&count);
+    NSUInteger matched = 0;
+    for (unsigned int i = 0; i < count; i++) {
+        Class cls = classes[i];
+        NSString *name = [NSString stringWithUTF8String:class_getName(cls) ?: ""];
+        if (!ZVTIsTargetClassName(name)) continue;
+        matched++;
+
+        BOOL shouldDump = NO;
+        @synchronized (ZVTLoggedClasses()) {
+            if (![ZVTLoggedClasses() containsObject:name]) {
+                [ZVTLoggedClasses() addObject:name];
+                shouldDump = YES;
+            }
+        }
+        if (shouldDump) {
+            ZVTLog([NSString stringWithFormat:@"CLASS_MATCH fullName=%@ pointer=%p superclass=%@",
+                    name, cls, class_getSuperclass(cls) ? NSStringFromClass(class_getSuperclass(cls)) : @"nil"]);
+            ZVTDumpMethods(cls, NO);
+            ZVTDumpMethods(cls, YES);
+        }
+
+        ZVTInstallLifecycleHooksForClass(cls, NO);
+        ZVTInstallLifecycleHooksForClass(cls, YES);
+    }
+    free(classes);
+    ZVTLog([NSString stringWithFormat:@"RUNTIME_SCAN complete classCount=%u matchedCount=%lu",
+            count, (unsigned long)matched]);
+}
+
+static void ZVTScanAttempt(NSUInteger attempt) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(attempt == 0 ? 6 : 4) * NSEC_PER_SEC),
+                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        @autoreleasepool {
+            ZVTLog([NSString stringWithFormat:@"SCAN_ATTEMPT %lu", (unsigned long)(attempt + 1)]);
+            ZVTInstallCoreHooks();
+            ZVTScanRuntime();
+            if (attempt < 4) ZVTScanAttempt(attempt + 1);
+        }
+    });
+}
+
+void ZVTInstall(void) {
+    @synchronized ([NSObject class]) {
+        if (ZVTInstalled) return;
+        ZVTInstalled = YES;
+    }
+    ZVTQueue = dispatch_queue_create("com.fadedrk.zolacn.voicetrace.v6", DISPATCH_QUEUE_SERIAL);
+    ZVTLog(@"START version=6 runtime_introspection_callstack_upload_lifecycle log=Library/Caches/ZolaVoiceTrace-v6.log");
+    ZVTScanAttempt(0);
+}
+
+// Start independently: the current TweakRaw.xm does not call ZVTInstall().
+__attribute__((constructor))
+static void ZVTBootstrap(void) {
+    @autoreleasepool { ZVTInstall(); }
 }
