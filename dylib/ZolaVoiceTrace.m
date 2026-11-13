@@ -7,7 +7,7 @@
 #import <string.h>
 #import <dlfcn.h>
 
-#pragma mark - V6 trace state
+#pragma mark - V7.4 trace state
 
 static dispatch_queue_t ZVTQueue;
 static BOOL ZVTInstalled;
@@ -1595,7 +1595,7 @@ void ZVTInstall(void) {
         ZVTInstalled = YES;
     }
     ZVTQueue = dispatch_queue_create("com.fadedrk.zolacn.voicetrace.v7_4", DISPATCH_QUEUE_SERIAL);
-    ZVTLog(@"START version=7.3 targeted_upload_link_onVoiceSend_session_init_first_chunk_stack broad_class_dump=DISABLED rawSwiftIvarReads=DISABLED timezone=local log=Library/Caches/ZolaVoiceTrace-v7.3.log");
+    ZVTLog(@"START version=7.4 ivar_layout_readonly_voiceboard_action_inventory_docs_snapshot broad_class_dump=DISABLED unsafe_pointer_dereference=DISABLED timezone=local log=Library/Caches/ZolaVoiceTrace-v7.4.log");
     ZVTScanAttempt(0);
 }
 
