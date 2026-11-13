@@ -359,7 +359,10 @@ static BOOL ZVTMethodHasSafeForwardingSignature(Method method, NSUInteger *expli
 static ZVTProbeRecord *ZVTRecordForInvocation(id receiver, SEL selector) {
     if (!receiver || !selector) return nil;
     BOOL isClassMethod = class_isMetaClass(object_getClass(receiver));
-    Class current = isClassMethod ? (Class)receiver : object_getClass(receiver);
+    // For instance sends this is the instance class; for class sends it is the metaclass.
+    // Records for class methods are keyed by object_getClass(targetClass), so looking up
+    // from the metaclass is required to preserve the original IMP.
+    Class current = object_getClass(receiver);
     @synchronized (ZVTProbeRecords()) {
         for (Class cls = current; cls; cls = class_getSuperclass(cls)) {
             for (ZVTProbeRecord *record in ZVTProbeRecords()) {
