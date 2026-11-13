@@ -656,7 +656,7 @@ static UIViewController *ZVFindVoiceSenderInControllerTree(UIViewController *con
             if (found) return found;
         }
     }
-    for (UIViewController *child in controller.children) {
+    for (UIViewController *child in controller.childViewControllers) {
         found = ZVFindVoiceSenderInControllerTree(child, selector, visited);
         if (found) return found;
     }
