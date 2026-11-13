@@ -279,7 +279,7 @@ static BOOL ZVTIsTargetClassName(NSString *name) {
     return voiceUpload || audioUpload || namedLink || namedUploader;
 }
 
-static BOOL ZVTSelectorLooksLikeLifecycle(NSString *selectorName) {
+static BOOL __attribute__((unused)) ZVTSelectorLooksLikeLifecycle(NSString *selectorName) {
     NSString *lower = selectorName.lowercaseString;
     NSArray<NSString *> *needles = @[@"init", @"start", @"begin", @"upload", @"progress",
                                      @"complete", @"finish", @"success", @"failure", @"failed",
@@ -503,7 +503,7 @@ static BOOL ZVTSelectorHasRetainedReturnFamily(SEL selector) {
            ZVTHasMethodFamilyPrefix(name, @"copy") || ZVTHasMethodFamilyPrefix(name, @"mutableCopy");
 }
 
-static IMP ZVTWrapperForMethod(Method method, SEL selector) {
+static IMP __attribute__((unused)) ZVTWrapperForMethod(Method method, SEL selector) {
     NSUInteger argumentCount = 0;
     BOOL objectReturn = NO, voidReturn = NO;
     if (!ZVTMethodHasSafeForwardingSignature(method, &argumentCount, &objectReturn, &voidReturn)) return NULL;
@@ -517,7 +517,7 @@ static IMP ZVTWrapperForMethod(Method method, SEL selector) {
     return scalarWrappers[argumentCount];
 }
 
-static NSString *ZVTHookKey(Class cls, SEL selector, BOOL classMethod) {
+static NSString * __attribute__((unused)) ZVTHookKey(Class cls, SEL selector, BOOL classMethod) {
     return [NSString stringWithFormat:@"%p|%@|%@", cls,
             classMethod ? @"+" : @"-", NSStringFromSelector(selector)];
 }
