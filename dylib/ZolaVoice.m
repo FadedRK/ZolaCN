@@ -615,7 +615,6 @@ static void ZVCreateAttachMediaView(id self, SEL cmd) {
 static const void *ZVCustomDurationAssociationKey = &ZVCustomDurationAssociationKey;
 static IMP ZVOriginalAudioItemDuration;
 static IMP ZVOriginalAddSendingVoice;
-static BOOL ZVRuntimeHooksInstalled;
 static BOOL ZVRuntimeHooksStarted;
 static BOOL ZVDurationHookInstalled;
 static BOOL ZVAddVoiceHookInstalled;
