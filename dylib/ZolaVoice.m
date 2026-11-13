@@ -17,12 +17,14 @@ static NSString *gPendingVoicePackAACPath;
 static double gPendingVoiceDuration;
 static unsigned long long gPendingVoiceSize;
 static BOOL gHasPendingVoicePack;
+static NSUInteger gPendingVoiceGeneration;
 static NSString *gPendingNativeAACDirectory;
 static NSString *gPendingNativeAACPath;
 static NSSet<NSString *> *gPendingAACBaselinePaths;
 static const void *ZVVoicePackDurationKey = &ZVVoicePackDurationKey;
 static const void *ZVVoicePackSizeKey = &ZVVoicePackSizeKey;
 static const void *ZVVoicePackItemKey = &ZVVoicePackItemKey;
+static void ZVClearPendingVoicePackAfterUpload(void);
 // The queued payload is a completed 44.1 kHz mono AAC/ADTS asset; only a native
 // VoiceBoard recording session may move it into Zalo's actual upload lifecycle.
 
@@ -961,16 +963,35 @@ static NSString *ZVFindNewNativeAAC(void) {
     return best;
 }
 
-static void ZVScheduleNativeAACDiscovery(NSUInteger attempt) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(attempt == 0 ? 10 : 20) * NSEC_PER_MSEC),
+static void ZVScheduleNativeAACDiscovery(NSUInteger attempt, unsigned long long previousSize, NSUInteger stableSamples) {
+    // Do not touch the file while Zalo's recorder is writing it. Wait until the
+    // file size is unchanged across three samples after the native gesture ends.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)120 * NSEC_PER_MSEC),
                    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         @autoreleasepool {
-            NSString *path = ZVFindNewNativeAAC();
-            if (path) { ZVReplacePendingNativeAAC(path, @"first_file_detection"); return; }
             BOOL pending = NO;
             @synchronized ([NSObject class]) { pending = gHasPendingVoicePack; }
-            if (pending && attempt < 100) ZVScheduleNativeAACDiscovery(attempt + 1);
-            else if (pending) ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend] native_aac_not_detected; pending_state_kept");
+            if (!pending) return;
+
+            NSString *path = ZVFindNewNativeAAC();
+            NSDictionary *attrs = path.length ?
+                [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil] : nil;
+            unsigned long long currentSize = [attrs[NSFileSize] unsignedLongLongValue];
+            if (path.length && currentSize > 0) {
+                NSUInteger nextStable = (currentSize == previousSize) ? stableSamples + 1 : 0;
+                if (nextStable >= 2) {
+                    ZVReplacePendingNativeAAC(path, @"stable_after_recording");
+                    return;
+                }
+                ZVScheduleNativeAACDiscovery(attempt + 1, currentSize, nextStable);
+                return;
+            }
+
+            if (attempt < 100) {
+                ZVScheduleNativeAACDiscovery(attempt + 1, 0, 0);
+            } else {
+                ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend] native_aac_not_ready; pending_state_kept_until_timeout");
+            }
         }
     });
 }
@@ -984,20 +1005,16 @@ static void ZVVoiceBoardLongPress(id self, SEL cmd, id recognizer) {
     @synchronized ([NSObject class]) { pending = gHasPendingVoicePack; }
     if (ZVOriginalVoiceBoardLongPress)
         ((void (*)(id, SEL, id))ZVOriginalVoiceBoardLongPress)(self, cmd, recognizer);
-    if (pending && state == UIGestureRecognizerStateBegan) {
-        ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend] native_recording_began; watching new AAC file");
-        ZVScheduleNativeAACDiscovery(0);
-    } else if (pending && (state == UIGestureRecognizerStateEnded ||
-                            state == UIGestureRecognizerStateCancelled ||
-                            state == UIGestureRecognizerStateFailed)) {
-        NSString *path = ZVFindNewNativeAAC();
-        if (path) ZVReplacePendingNativeAAC(path, @"gesture_ended_after_original");
-        else ZVScheduleNativeAACDiscovery(0);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_MSEC)),
-                       dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-            NSString *finalPath = ZVCopyPendingNativePath();
-            if (finalPath) ZVReplacePendingNativeAAC(finalPath, @"gesture_terminal_flush");
-        });
+
+    if (!pending) return;
+    if (state == UIGestureRecognizerStateBegan) {
+        // Only observe the native session here. Replacing the file at creation
+        // time can race the recorder's own file handle and prevent AudioItem creation.
+        ZVWriteVoiceEntryLog(@"[ZolaCN][VoiceSend] native_recording_began; replacement_deferred_until_recording_stops");
+    } else if (state == UIGestureRecognizerStateEnded) {
+        ZVScheduleNativeAACDiscovery(0, 0, 0);
+    } else if (state == UIGestureRecognizerStateCancelled || state == UIGestureRecognizerStateFailed) {
+        ZVClearPendingVoicePackAfterUpload();
     }
 }
 
@@ -1043,6 +1060,7 @@ static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatControll
         if (errorText) *errorText = @"AAC-ADTS 文件为空或时长无法识别";
         return NO;
     }
+    NSUInteger generation = 0;
     @synchronized ([NSObject class]) {
         gPendingVoicePackAACPath = [preparedPath copy];
         gPendingVoiceDuration = duration;
@@ -1051,7 +1069,17 @@ static BOOL ZVSendVoicePackFile(NSURL *sourceURL, UIViewController *chatControll
         gPendingNativeAACPath = nil;
         gPendingAACBaselinePaths = ZVCollectAACPaths(nativeAACDirectory);
         gHasPendingVoicePack = YES;
+        generation = ++gPendingVoiceGeneration;
     }
+    // A missed native gesture or a failed upload must never lock the queue forever.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)90 * NSEC_PER_SEC),
+                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        BOOL expired = NO;
+        @synchronized ([NSObject class]) {
+            expired = gHasPendingVoicePack && gPendingVoiceGeneration == generation;
+        }
+        if (expired) ZVClearPendingVoicePackAfterUpload();
+    });
     ZVWriteVoiceEntryLog([NSString stringWithFormat:
         @"[ZolaCN][VoiceSend] pending_ready path=%@ duration=%.6f size=%llu codec=AAC-ADTS sampleRate=44100 channels=1",
         preparedPath, duration, fileSize]);
@@ -1089,7 +1117,8 @@ static id ZVAudioItemInit(id self,SEL cmd,long long fileID,id mediaID,id clientI
         }
     }
     BOOL isPending=pendingPath.length&&path.length&&[[path stringByStandardizingPath] isEqualToString:[pendingPath stringByStandardizingPath]];
-    if(isPending)ZVReplacePendingNativeAAC(pendingPath,@"audio_item_init_before");
+    // The model may be created while the recorder is closing its file. Associate
+    // metadata now, but defer byte replacement until the post-recording stability check.
     IMP original=ZVOriginalAudioItemInit;
     id result=original?((id(*)(id,SEL,long long,id,id,id))original)(self,cmd,fileID,mediaID,clientID,filePath):nil;
     id item=result?:self;
