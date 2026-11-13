@@ -160,78 +160,23 @@ static const char *ZVTUnqualifiedType(const char *type) {
     return type;
 }
 
-static NSString *ZVTReadIvarValue(id object, Ivar ivar, NSString *name) {
-    if (!object || !ivar) return @"<nil-object>";
-    if (ZVTIsSensitiveFieldName(name)) return @"<redacted-sensitive-field>";
-    const char *rawType = ivar_getTypeEncoding(ivar);
-    const char *type = ZVTUnqualifiedType(rawType);
-    if (!type || !*type) return @"<unknown-type>";
-
-    if (*type == '@') {
-        id value = object_getIvar(object, ivar);
-        return value ? ZVTShortObjectValue(value) : @"nil";
-    }
-
-    ptrdiff_t offset = ivar_getOffset(ivar);
-    const uint8_t *base = (const uint8_t *)(__bridge const void *)object;
-    const uint8_t *address = base + offset;
-    switch (*type) {
-        case '#': {
-            Class value = Nil;
-            memcpy(&value, address, sizeof(value));
-            return value ? [NSString stringWithFormat:@"Class(%s)", class_getName(value)] : @"nil";
-        }
-        case ':': {
-            SEL value = NULL;
-            memcpy(&value, address, sizeof(value));
-            return value ? [NSString stringWithFormat:@"SEL(%s)", sel_getName(value)] : @"nil";
-        }
-        case '^':
-        case '*': {
-            void *value = NULL;
-            memcpy(&value, address, sizeof(value));
-            return value ? [NSString stringWithFormat:@"pointer(%p)", value] : @"nil";
-        }
-        case 'B': { BOOL v=NO; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"BOOL(%d)",v]; }
-        case 'c': { signed char v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"int8(%d)",v]; }
-        case 'C': { unsigned char v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"uint8(%u)",v]; }
-        case 's': { short v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"int16(%d)",v]; }
-        case 'S': { unsigned short v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"uint16(%u)",v]; }
-        case 'i': { int v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"int32(%d)",v]; }
-        case 'I': { unsigned int v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"uint32(%u)",v]; }
-        case 'l': { long v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"long(%ld)",v]; }
-        case 'L': { unsigned long v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"ulong(%lu)",v]; }
-        case 'q': { long long v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"int64(%lld)",v]; }
-        case 'Q': { unsigned long long v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"uint64(%llu)",v]; }
-        case 'f': { float v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"float(%.6f)",v]; }
-        case 'd': { double v=0; memcpy(&v,address,sizeof(v)); return [NSString stringWithFormat:@"double(%.9f)",v]; }
-        default:
-            return [NSString stringWithFormat:@"<non-scalar type %s>", type];
-    }
-}
-
 static void ZVTDescribeObject(id object, NSString *label, BOOL entityFilter) {
     if (!object) {
-        ZVTEvent([NSString stringWithFormat:@"OBJECT %@ class=nil pointer=nil", label]);
+        ZVTEvent([NSString stringWithFormat:@"OBJECT %@ class=nil pointer=nil metadata_only=YES", label]);
         return;
     }
+
+    // IMPORTANT: never read an instance ivar value here. Swift and Objective-C
+    // objects may contain resilient/native fields that must not be treated as
+    // ordinary Objective-C id values. Runtime metadata is safe to enumerate.
     Class rootClass = object_getClass(object);
     NSString *rootName = rootClass ? [NSString stringWithUTF8String:class_getName(rootClass)] : @"<unknown>";
-    ZVTEvent([NSString stringWithFormat:@"OBJECT %@ class=%@ pointer=%p summary=%@",
-              label, rootName, object, ZVTShortObjectValue(object)]);
-
-    // Foundation value objects (including tagged NSString/NSNumber instances) are
-    // summarized directly; reading their private ivar layouts is not portable.
-    if ([object isKindOfClass:NSString.class] || [object isKindOfClass:NSNumber.class] ||
-        [object isKindOfClass:NSURL.class] || [object isKindOfClass:NSData.class] ||
-        [object isKindOfClass:NSDate.class] || [object isKindOfClass:NSArray.class] ||
-        [object isKindOfClass:NSDictionary.class]) {
-        ZVTEvent([NSString stringWithFormat:@"OBJECT %@ FOUNDATION_VALUE_OBJECT details=summary_only", label]);
-        return;
-    }
+    ZVTEvent([NSString stringWithFormat:@"OBJECT %@ class=%@ pointer=%p metadata_only=YES",
+              label, rootName, object]);
 
     for (Class cls = rootClass; cls; cls = class_getSuperclass(cls)) {
         const char *className = class_getName(cls);
+
         unsigned int propertyCount = 0;
         objc_property_t *properties = class_copyPropertyList(cls, &propertyCount);
         for (unsigned int i = 0; i < propertyCount; i++) {
@@ -239,15 +184,9 @@ static void ZVTDescribeObject(id object, NSString *label, BOOL entityFilter) {
             if (!rawName) continue;
             NSString *name = [NSString stringWithUTF8String:rawName];
             if (entityFilter && !ZVTIsRelevantEntityField(name)) continue;
-            if (ZVTIsSensitiveFieldName(name)) continue;
             const char *attributes = property_getAttributes(properties[i]);
-            NSString *backing = @"<none>";
-            if (attributes) {
-                const char *v = strstr(attributes, ",V");
-                if (v && *(v + 2)) backing = [NSString stringWithUTF8String:v + 2] ?: @"<unknown>";
-            }
-            ZVTEvent([NSString stringWithFormat:@"PROPERTY %@ owner=%s name=%@ attributes=%s backingIvar=%@",
-                      label, className ?: "?", name, attributes ?: "", backing]);
+            ZVTEvent([NSString stringWithFormat:@"PROPERTY_META %@ owner=%s name=%@ attributes=%s",
+                      label, className ?: "?", name, attributes ?: "?"]);
         }
         free(properties);
 
@@ -258,16 +197,14 @@ static void ZVTDescribeObject(id object, NSString *label, BOOL entityFilter) {
             if (!rawName) continue;
             NSString *name = [NSString stringWithUTF8String:rawName];
             if (entityFilter && !ZVTIsRelevantEntityField(name)) continue;
-            NSString *value = ZVTReadIvarValue(object, ivars[i], name);
-            if ([value isEqualToString:@"nil"]) continue;
-            ZVTEvent([NSString stringWithFormat:@"IVAR %@ owner=%s name=%@ type=%s value=%@",
-                      label, className ?: "?", name,
-                      ivar_getTypeEncoding(ivars[i]) ?: "?", value ?: @"<nil>"]);
+            ptrdiff_t offset = ivar_getOffset(ivars[i]);
+            const char *type = ivar_getTypeEncoding(ivars[i]);
+            ZVTEvent([NSString stringWithFormat:@"IVAR_META %@ owner=%s name=%@ offset=%td type=%s",
+                      label, className ?: "?", name, offset, type ?: "?"]);
         }
         free(ivars);
     }
 }
-
 #pragma mark - Runtime class and method discovery
 
 static BOOL ZVTIsTargetClassName(NSString *name) {
