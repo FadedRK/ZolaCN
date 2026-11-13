@@ -7,7 +7,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = ZolaCN
 ZolaCN_FILES = TweakRaw.xm TranslationsData.m ZolaTheme.m ZolaAntiRecall.m ZolaVoice.m ZolaVoiceTrace.m ZolaAttachTrace.m ZolaCompatibility.m
 ZolaCN_CFLAGS = -fobjc-arc
-ZolaCN_FRAMEWORKS = Foundation UIKit AVFoundation UniformTypeIdentifiers
+ZolaCN_FRAMEWORKS = Foundation UIKit AVFoundation AudioToolbox UniformTypeIdentifiers
 ZolaCN_LIBRARIES = z
 ZolaCN_LDFLAGS = -install_name @rpath/ZolaCN.dylib
 
