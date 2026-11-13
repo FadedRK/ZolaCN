@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.6] — 2026-11-14
+
+### Fixed
+- Defer native AAC replacement until the original Zalo recording gesture has ended and the file size is stable, avoiding writes while the recorder is still creating the file.
+- Keep AudioItem metadata association separate from file replacement so model initialization does not overwrite an active recorder file.
+- Add a 90-second pending-send expiry and clear the pending state after a cancelled or failed native recording gesture.
+- Remove the dedicated VoiceTrace runtime module from the release build; the release focuses on the voice-pack sending path rather than diagnostic tracing.
+
+
 ## [1.0.5] — 2026-11-13
 
 ### Added
