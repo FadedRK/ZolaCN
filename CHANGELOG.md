@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.7] — 2026-11-16
+
+### Added
+- Replace AAC file swapping with PCM injection into Zalo's native voice recorder through AudioUnitRender on input bus 1.
+- Decode voice packs to 44.1 kHz mono Float32 PCM before recording, with sample-rate-aware interpolation against the recorder's actual AudioUnit stream format.
+- Add atomic PCM packet publication/retirement, render-reader lifetime protection, tail-silence flushing, and a bounded pending-send lifecycle.
+- Track the native voice upload through the runtime-validated VoiceBoardViewModel chunk, success, and failure callbacks.
+
+### Fixed
+- Remove the old native AAC discovery, file-size stabilization, and ftruncate/pwrite replacement path.
+- Preserve native AudioItem metadata and the existing voice-pack management interface.
+
 ## [1.0.6] — 2026-11-14
 
 ### Fixed
