@@ -872,13 +872,6 @@ static NSSet<NSString *> *ZVCollectAACPaths(NSString *directory) {
     return paths;
 }
 
-static NSString *ZVCopyPendingNativePath(void) {
-    os_unfair_lock_lock(&gZVStateLock);
-    NSString *path = [gPendingNativeAACPath copy];
-    os_unfair_lock_unlock(&gZVStateLock);
-    return path;
-}
-
 static NSString *ZVVoiceStateName(ZVVoiceState state) {
     switch (state) {
         case ZVVoiceStateIdle: return @"Idle";
