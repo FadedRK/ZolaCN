@@ -83,6 +83,12 @@ jobs:
             NOTES="ZolaCN $TAG"
           fi
 
+          # Create the tag ref explicitly before publishing the release.
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            git tag "$TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$TAG"
+          fi
+
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/ZolaCN.dylib \
               --repo "$GITHUB_REPOSITORY" \
