@@ -1606,24 +1606,24 @@ static BOOL ZVInstallAudioEntryProbes(void) {
     typedef void (*ZVNativeHookFunction)(void *, void *, void **);
     ZVNativeHookFunction hooker = (ZVNativeHookFunction)ZVResolveHookSymbol("MSHookFunction", &provider);
     if (!hooker) hooker = (ZVNativeHookFunction)ZVResolveHookSymbol("SubHookFunction", &provider);
-    if (!ZVAudioQueueHookInstalled) {
+    if (!gZVAudioQueueHookInstalled) {
         void *target = dlsym(RTLD_DEFAULT, "AudioQueueNewInput");
-        if (target && hooker) { hooker(target, (void *)ZVAudioQueueNewInputHook, (void **)&ZVOriginalAudioQueueNewInput); ZVAudioQueueHookInstalled = ZVOriginalAudioQueueNewInput != NULL; }
-        ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][AudioProbe] AudioQueueNewInput hook=%d target=%p original=%p provider=%s", ZVAudioQueueHookInstalled, target, ZVOriginalAudioQueueNewInput, provider ?: "unknown"]);
+        if (target && hooker) { hooker(target, (void *)ZVAudioQueueNewInputHook, (void **)&ZVOriginalAudioQueueNewInput); gZVAudioQueueHookInstalled = ZVOriginalAudioQueueNewInput != NULL; }
+        ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][AudioProbe] AudioQueueNewInput hook=%d target=%p original=%p provider=%s", gZVAudioQueueHookInstalled, target, ZVOriginalAudioQueueNewInput, provider ?: "unknown"]);
     }
-    if (!ZVAudioUnitSetPropertyHookInstalled) {
+    if (!gZVAudioUnitSetPropertyHookInstalled) {
         void *target = dlsym(RTLD_DEFAULT, "AudioUnitSetProperty");
-        if (target && hooker) { hooker(target, (void *)ZVAudioUnitSetPropertyHook, (void **)&ZVOriginalAudioUnitSetProperty); ZVAudioUnitSetPropertyHookInstalled = ZVOriginalAudioUnitSetProperty != NULL; }
-        ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][AudioProbe] AudioUnitSetProperty hook=%d target=%p original=%p provider=%s", ZVAudioUnitSetPropertyHookInstalled, target, ZVOriginalAudioUnitSetProperty, provider ?: "unknown"]);
+        if (target && hooker) { hooker(target, (void *)ZVAudioUnitSetPropertyHook, (void **)&ZVOriginalAudioUnitSetProperty); gZVAudioUnitSetPropertyHookInstalled = ZVOriginalAudioUnitSetProperty != NULL; }
+        ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][AudioProbe] AudioUnitSetProperty hook=%d target=%p original=%p provider=%s", gZVAudioUnitSetPropertyHookInstalled, target, ZVOriginalAudioUnitSetProperty, provider ?: "unknown"]);
     }
-    if (!ZVInstallTapHookInstalled) {
+    if (!gZVInstallTapHookInstalled) {
         SEL selector = @selector(installTapOnBus:bufferSize:format:block:);
         Method method = class_getInstanceMethod(AVAudioNode.class, selector);
         if (method) gZVOriginalInstallTap = method_setImplementation(method, (IMP)ZVInstallTapOnBusHook);
-        ZVInstallTapHookInstalled = gZVOriginalInstallTap != NULL;
-        ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][AudioProbe] AVAudioNode installTap hook=%d original=%p", ZVInstallTapHookInstalled, gZVOriginalInstallTap]);
+        gZVInstallTapHookInstalled = gZVOriginalInstallTap != NULL;
+        ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][AudioProbe] AVAudioNode installTap hook=%d original=%p", gZVInstallTapHookInstalled, gZVOriginalInstallTap]);
     }
-    return ZVAudioQueueHookInstalled || ZVAudioUnitSetPropertyHookInstalled || ZVInstallTapHookInstalled;
+    return gZVAudioQueueHookInstalled || gZVAudioUnitSetPropertyHookInstalled || gZVInstallTapHookInstalled;
 }
 
 static void ZVCompletePendingVoicePack(BOOL success, NSString *reason) {
