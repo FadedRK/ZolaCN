@@ -1375,9 +1375,6 @@ static OSStatus ZVAudioUnitRenderHook(AudioUnit unit,
     return status;
 }
 
-static BOOL ZVInstallAudioUnitRenderHook(void) {
-    if (ZVAudioUnitRenderHookInstalled && ZVOriginalAudioUnitRender) return YES;
-
 static void *ZVResolveMSHookFunction(const char **resolvedImage) {
     void *symbol = dlsym(RTLD_DEFAULT, "MSHookFunction");
     if (symbol) {
@@ -1438,7 +1435,6 @@ static BOOL ZVInstallAudioUnitRenderHook(void) {
         ZVAudioUnitRenderHookInstalled, ZVOriginalAudioUnitRender, target,
         hookImage ?: "unknown"]);
     return ZVAudioUnitRenderHookInstalled;
-}
 }
 
 static void ZVCompletePendingVoicePack(BOOL success, NSString *reason) {
