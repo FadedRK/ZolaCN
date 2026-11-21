@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.10] — 2026-11-21
+
+### Fixed
+- Add three-level AudioUnitRender hook resolution: RTLD_DEFAULT symbols, explicit ElleKit/Substrate library loading, then fishhook rebinding.
+- Fishhook rebinding covers existing and subsequently loaded images, validates Mach-O indirect symbol table bounds, and temporarily enables/restores pointer-slot page protections.
+- Log selected hook method and number of images containing rebound AudioUnitRender slots.
+
+### Build
+- Preserve arm64e-only dylib release output.
+
 ## [1.0.9] — 2026-11-21
 
 ### Fixed

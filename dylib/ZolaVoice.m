@@ -1375,66 +1375,179 @@ static OSStatus ZVAudioUnitRenderHook(AudioUnit unit,
     return status;
 }
 
-static void *ZVResolveMSHookFunction(const char **resolvedImage) {
-    void *symbol = dlsym(RTLD_DEFAULT, "MSHookFunction");
-    if (symbol) {
-        if (resolvedImage) *resolvedImage = "RTLD_DEFAULT";
-        return symbol;
+static const char *gZVAudioUnitHookMethod = "not-installed";
+static atomic_uint gZVFishhookImageCount = ATOMIC_VAR_INIT(0);
+static BOOL gZVFishhookRegistered = NO;
+
+typedef struct {
+    const char *name;
+    void *replacement;
+    void **replaced;
+} ZVRebinding;
+
+static BOOL ZVRangeInside(uint64_t offset, uint64_t length, uint64_t limit) {
+    return offset <= limit && length <= limit - offset;
+}
+
+static BOOL ZVProtectPointerSlot(void **slot, vm_prot_t originalProtection, BOOL writable) {
+    vm_size_t pageSize = (vm_size_t)vm_page_size;
+    uintptr_t address = (uintptr_t)slot;
+    uintptr_t page = address & ~((uintptr_t)pageSize - 1);
+    vm_size_t span = (vm_size_t)(((address + sizeof(void *) - page + pageSize - 1) / pageSize) * pageSize);
+    vm_prot_t protection = writable ? (originalProtection | VM_PROT_READ | VM_PROT_WRITE) : originalProtection;
+    return vm_protect(mach_task_self(), (vm_address_t)page, span, FALSE, protection) == KERN_SUCCESS;
+}
+
+static void ZVRebindImage(const struct mach_header *header, intptr_t slide) {
+    if (!header || header->magic != MH_MAGIC_64) return;
+    const struct mach_header_64 *mh = (const struct mach_header_64 *)header;
+    const uint8_t *cursor = (const uint8_t *)(mh + 1);
+    const uint8_t *commandsEnd = cursor + mh->sizeofcmds;
+    if (commandsEnd < cursor) return;
+
+    const struct symtab_command *symtab = NULL;
+    const struct dysymtab_command *dysymtab = NULL;
+    const struct segment_command_64 *linkedit = NULL;
+    const struct segment_command_64 *segments[128];
+    uint32_t segmentCount = 0;
+
+    for (uint32_t i = 0; i < mh->ncmds; i++) {
+        if (cursor + sizeof(struct load_command) > commandsEnd) return;
+        const struct load_command *lc = (const struct load_command *)cursor;
+        if (lc->cmdsize < sizeof(struct load_command) || cursor + lc->cmdsize > commandsEnd) return;
+        if (lc->cmd == LC_SYMTAB && lc->cmdsize >= sizeof(struct symtab_command))
+            symtab = (const struct symtab_command *)lc;
+        else if (lc->cmd == LC_DYSYMTAB && lc->cmdsize >= sizeof(struct dysymtab_command))
+            dysymtab = (const struct dysymtab_command *)lc;
+        else if (lc->cmd == LC_SEGMENT_64 && lc->cmdsize >= sizeof(struct segment_command_64)) {
+            const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+            if (segmentCount < 128) segments[segmentCount++] = seg;
+            if (strcmp(seg->segname, SEG_LINKEDIT) == 0) linkedit = seg;
+        }
+        cursor += lc->cmdsize;
     }
+    if (!symtab || !dysymtab || !linkedit) return;
 
-    /* RTLD_DEFAULT does not necessarily expose symbols from locally-loaded tweak
-       injection libraries. Search the images already loaded into this process. */
-    uint32_t imageCount = _dyld_image_count();
-    for (uint32_t i = imageCount; i > 0; i--) {
-        const char *imagePath = _dyld_get_image_name(i - 1);
-        if (!imagePath) continue;
+    uintptr_t linkeditBase = (uintptr_t)(slide + (intptr_t)linkedit->vmaddr - (intptr_t)linkedit->fileoff);
+    if (symtab->symoff < linkedit->fileoff || symtab->stroff < linkedit->fileoff) return;
+    uint64_t symBytes = (uint64_t)symtab->nsyms * sizeof(struct nlist_64);
+    uint64_t strBytes = symtab->strsize;
+    uint64_t indirectBytes = (uint64_t)dysymtab->nindirectsyms * sizeof(uint32_t);
+    if (!ZVRangeInside((uint64_t)symtab->symoff - linkedit->fileoff, symBytes, linkedit->filesize) ||
+        !ZVRangeInside((uint64_t)symtab->stroff - linkedit->fileoff, strBytes, linkedit->filesize) ||
+        dysymtab->indirectsymoff < linkedit->fileoff ||
+        !ZVRangeInside((uint64_t)dysymtab->indirectsymoff - linkedit->fileoff, indirectBytes, linkedit->filesize)) return;
 
-        BOOL looksLikeHookLibrary =
-            strstr(imagePath, "ElleKit") != NULL ||
-            strstr(imagePath, "ellekit") != NULL ||
-            strstr(imagePath, "Substrate") != NULL ||
-            strstr(imagePath, "substrate") != NULL ||
-            strstr(imagePath, "Substitute") != NULL ||
-            strstr(imagePath, "substitute") != NULL ||
-            strstr(imagePath, "libhooker") != NULL;
-        if (!looksLikeHookLibrary) continue;
+    const struct nlist_64 *symbols = (const struct nlist_64 *)(linkeditBase + symtab->symoff);
+    const char *strings = (const char *)(linkeditBase + symtab->stroff);
+    const uint32_t *indirect = (const uint32_t *)(linkeditBase + dysymtab->indirectsymoff);
+    BOOL imageChanged = NO;
 
-        void *handle = dlopen(imagePath, RTLD_LAZY | RTLD_NOLOAD);
+    for (uint32_t si = 0; si < segmentCount; si++) {
+        const struct segment_command_64 *seg = segments[si];
+        const struct section_64 *sections = (const struct section_64 *)(seg + 1);
+        uint64_t maxSections = (seg->cmdsize - sizeof(*seg)) / sizeof(struct section_64);
+        if (seg->nsects > maxSections) continue;
+        for (uint32_t sj = 0; sj < seg->nsects; sj++) {
+            const struct section_64 *section = &sections[sj];
+            uint32_t type = section->flags & SECTION_TYPE;
+            if (type != S_LAZY_SYMBOL_POINTERS && type != S_NON_LAZY_SYMBOL_POINTERS) continue;
+            if (section->reserved1 > dysymtab->nindirectsyms) continue;
+            uint64_t count = section->size / sizeof(void *);
+            if (!ZVRangeInside(section->reserved1, count, dysymtab->nindirectsyms)) continue;
+            uint64_t sectionFileOffset = section->offset;
+            if (!ZVRangeInside(sectionFileOffset, section->size, linkedit->fileoff + linkedit->filesize + UINT32_MAX)) {
+                /* Section VM addresses are checked against their owning segment below. */
+                if (section->addr < seg->vmaddr || section->addr + section->size < section->addr ||
+                    section->addr + section->size > seg->vmaddr + seg->vmsize) continue;
+            }
+            uintptr_t sectionAddress = (uintptr_t)(slide + (intptr_t)section->addr);
+            vm_prot_t originalProtection = (vm_prot_t)seg->initprot;
+            for (uint64_t k = 0; k < count; k++) {
+                uint32_t symbolIndex = indirect[section->reserved1 + k];
+                if (symbolIndex == INDIRECT_SYMBOL_ABS || symbolIndex == INDIRECT_SYMBOL_LOCAL ||
+                    symbolIndex >= symtab->nsyms) continue;
+                uint32_t stringIndex = symbols[symbolIndex].n_un.n_strx;
+                if (stringIndex >= symtab->strsize) continue;
+                const char *symbolName = strings + stringIndex;
+                if (!symbolName[0] || strcmp(symbolName, "_AudioUnitRender") != 0) continue;
+
+                void **slot = (void **)(sectionAddress + k * sizeof(void *));
+                if (sectionAddress + (k + 1) * sizeof(void *) < sectionAddress) continue;
+                if (!ZVProtectPointerSlot(slot, originalProtection, YES)) continue;
+                if (!ZVOriginalAudioUnitRender && *slot)
+                    ZVOriginalAudioUnitRender = (ZVAudioUnitRenderFunction)*slot;
+                *slot = (void *)ZVAudioUnitRenderHook;
+                (void)ZVProtectPointerSlot(slot, originalProtection, NO);
+                imageChanged = YES;
+            }
+        }
+    }
+    if (imageChanged) atomic_fetch_add_explicit(&gZVFishhookImageCount, 1, memory_order_relaxed);
+}
+
+static void ZVFishhookAddImage(const struct mach_header *header, intptr_t slide) {
+    ZVRebindImage(header, slide);
+}
+
+static void *ZVResolveHookSymbol(const char *name, const char **provider) {
+    void *symbol = dlsym(RTLD_DEFAULT, name);
+    if (symbol && provider) *provider = "RTLD_DEFAULT";
+    if (symbol) return symbol;
+    const char *paths[] = {
+        "/var/jb/usr/lib/libellekit.dylib",
+        "/usr/lib/libellekit.dylib",
+        "/var/jb/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate"
+    };
+    for (NSUInteger i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        void *handle = dlopen(paths[i], RTLD_LAZY);
         if (!handle) continue;
-        symbol = dlsym(handle, "MSHookFunction");
+        symbol = dlsym(handle, name);
         if (symbol) {
-            if (resolvedImage) *resolvedImage = imagePath;
-            /* Keep the handle open: the resolved function must remain mapped. */
+            if (provider) *provider = paths[i];
             return symbol;
         }
     }
-
-    if (resolvedImage) *resolvedImage = NULL;
     return NULL;
 }
 
 static BOOL ZVInstallAudioUnitRenderHook(void) {
     if (ZVAudioUnitRenderHookInstalled && ZVOriginalAudioUnitRender) return YES;
-
-    typedef void (*ZVMSHookFunction)(void *, void *, void **);
-    const char *hookImage = NULL;
-    ZVMSHookFunction hooker = (ZVMSHookFunction)ZVResolveMSHookFunction(&hookImage);
     void *target = dlsym(RTLD_DEFAULT, "AudioUnitRender");
-    if (!hooker || !target) {
-        ZVLogVoiceEntryOnce(@"audiounit_render_hook_unavailable",
-                            @"AudioUnitRender hook unavailable (MSHookFunction=%d symbol=%d image=%s)",
-                            hooker != NULL, target != NULL,
-                            hookImage ?: "not-found");
-        return NO;
+    const char *provider = NULL;
+    typedef void (*ZVNativeHookFunction)(void *, void *, void **);
+    ZVNativeHookFunction hooker = (ZVNativeHookFunction)ZVResolveHookSymbol("MSHookFunction", &provider);
+    if (!hooker) hooker = (ZVNativeHookFunction)ZVResolveHookSymbol("SubHookFunction", &provider);
+
+    if (target && hooker) {
+        hooker(target, (void *)ZVAudioUnitRenderHook, (void **)&ZVOriginalAudioUnitRender);
+        if (ZVOriginalAudioUnitRender) {
+            ZVAudioUnitRenderHookInstalled = YES;
+            gZVAudioUnitHookMethod = (provider && strcmp(provider, "RTLD_DEFAULT") == 0) ?
+                "level1-dlsym" : "level2-dlopen";
+            ZVWriteVoiceEntryLog([NSString stringWithFormat:
+                @"[ZolaCN][VoicePCM] AudioUnitRender hook installed=1 method=%s provider=%s target=%p original=%p fishhook_images=0",
+                gZVAudioUnitHookMethod, provider ?: "unknown", target, ZVOriginalAudioUnitRender]);
+            return YES;
+        }
     }
 
-    hooker(target, (void *)ZVAudioUnitRenderHook, (void **)&ZVOriginalAudioUnitRender);
-    ZVAudioUnitRenderHookInstalled = (ZVOriginalAudioUnitRender != NULL);
-    ZVWriteVoiceEntryLog([NSString stringWithFormat:
-        @"[ZolaCN][VoicePCM] AudioUnitRender hook installed=%d original=%p target=%p provider=%s",
-        ZVAudioUnitRenderHookInstalled, ZVOriginalAudioUnitRender, target,
-        hookImage ?: "unknown"]);
-    return ZVAudioUnitRenderHookInstalled;
+    if (target) {
+        if (!gZVFishhookRegistered) {
+            gZVFishhookRegistered = YES;
+            _dyld_register_func_for_add_image(ZVFishhookAddImage);
+        }
+        unsigned int count = atomic_load_explicit(&gZVFishhookImageCount, memory_order_relaxed);
+        ZVAudioUnitRenderHookInstalled = (count > 0 && ZVOriginalAudioUnitRender != NULL);
+        gZVAudioUnitHookMethod = "level3-fishhook";
+        ZVWriteVoiceEntryLog([NSString stringWithFormat:
+            @"[ZolaCN][VoicePCM] AudioUnitRender hook installed=%d method=%s fishhook_images=%u target=%p original=%p",
+            ZVAudioUnitRenderHookInstalled, gZVAudioUnitHookMethod, count, target, ZVOriginalAudioUnitRender]);
+        return ZVAudioUnitRenderHookInstalled;
+    }
+
+    ZVWriteVoiceEntryLog(@"[ZolaCN][VoicePCM] AudioUnitRender hook unavailable method=none target_symbol=0 fishhook_images=0");
+    return NO;
 }
 
 static void ZVCompletePendingVoicePack(BOOL success, NSString *reason) {
