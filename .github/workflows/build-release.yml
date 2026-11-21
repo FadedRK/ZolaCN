@@ -59,7 +59,6 @@ jobs:
           cp "$DYLIB" dist/ZolaCN.dylib
 
           file dist/ZolaCN.dylib
-          lipo -verify_arch arm64e dist/ZolaCN.dylib
           ARCHS="$(lipo -archs dist/ZolaCN.dylib)"
           test "$ARCHS" = "arm64e"
           echo "Verified architecture: $ARCHS"
