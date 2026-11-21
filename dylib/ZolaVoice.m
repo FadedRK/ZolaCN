@@ -10,6 +10,7 @@
 #import <stdatomic.h>
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
+#import <mach-o/nlist.h>
 #import <math.h>
 #import <stdint.h>
 #import <stdbool.h>
