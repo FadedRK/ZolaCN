@@ -46,50 +46,24 @@ jobs:
       - name: Embed translations
         run: python3 dylib/build_embed.py
 
-      - name: Build dylib
+      - name: Build arm64e dylib
         shell: bash
         run: |
+          set -euo pipefail
           make -C dylib clean
           make -C dylib
           mkdir -p dist
 
           DYLIB="$(find dylib/.theos -type f -name 'ZolaCN.dylib' | head -n 1)"
           test -n "$DYLIB"
-
           cp "$DYLIB" dist/ZolaCN.dylib
+
           file dist/ZolaCN.dylib
-          lipo -info dist/ZolaCN.dylib
+          lipo -verify_arch arm64e dist/ZolaCN.dylib
+          ARCHS="$(lipo -archs dist/ZolaCN.dylib)"
+          test "$ARCHS" = "arm64e"
+          echo "Verified architecture: $ARCHS"
           ls -lh dist/ZolaCN.dylib
-
-      - name: Build Debian package
-        shell: bash
-        run: python3 dylib/build_deb.py
-
-      - name: Generate checksums
-        shell: bash
-        run: |
-          cd dist
-          shasum -a 256 ZolaCN.dylib *.deb > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-
-      - name: Verify release files
-        shell: bash
-        run: |
-          test -f dist/ZolaCN.dylib
-          test -f dist/*.deb
-          test -f dist/SHA256SUMS.txt
-          file dist/ZolaCN.dylib
-          file dist/*.deb
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ZolaCN-${{ steps.release.outputs.version }}
-          path: |
-            dist/ZolaCN.dylib
-            dist/*.deb
-            dist/SHA256SUMS.txt
-          retention-days: 30
 
       - name: Publish GitHub Release
         if: github.ref == 'refs/heads/main'
@@ -111,10 +85,7 @@ jobs:
           fi
 
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" \
-              dist/ZolaCN.dylib \
-              dist/*.deb \
-              dist/SHA256SUMS.txt \
+            gh release upload "$TAG" dist/ZolaCN.dylib \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
 
@@ -126,10 +97,7 @@ jobs:
               --draft=false \
               --prerelease=false
           else
-            gh release create "$TAG" \
-              dist/ZolaCN.dylib \
-              dist/*.deb \
-              dist/SHA256SUMS.txt \
+            gh release create "$TAG" dist/ZolaCN.dylib \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "ZolaCN $TAG" \

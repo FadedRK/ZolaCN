@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.9] — 2026-11-21
+
+### Fixed
+- Resolve MSHookFunction from already-loaded ElleKit, Substrate, and Substitute injection images when it is not visible through RTLD_DEFAULT.
+- Record the resolved hook provider in the AudioUnitRender installation diagnostic.
+- Keep the resolved hook library handle alive for the lifetime of the hook.
+
+### Build
+- Build arm64e only.
+- Publish only ZolaCN.dylib; remove Debian packages, checksums, and zipped Actions artifacts from the release workflow.
+
 ## [1.0.8] — 2026-11-21
 
 ### Added

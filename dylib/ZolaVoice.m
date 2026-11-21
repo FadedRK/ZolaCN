@@ -9,6 +9,7 @@
 #import <os/lock.h>
 #import <stdatomic.h>
 #import <dlfcn.h>
+#import <mach-o/dyld.h>
 #import <math.h>
 #import <stdint.h>
 #import <stdbool.h>
@@ -1377,22 +1378,67 @@ static OSStatus ZVAudioUnitRenderHook(AudioUnit unit,
 static BOOL ZVInstallAudioUnitRenderHook(void) {
     if (ZVAudioUnitRenderHookInstalled && ZVOriginalAudioUnitRender) return YES;
 
+static void *ZVResolveMSHookFunction(const char **resolvedImage) {
+    void *symbol = dlsym(RTLD_DEFAULT, "MSHookFunction");
+    if (symbol) {
+        if (resolvedImage) *resolvedImage = "RTLD_DEFAULT";
+        return symbol;
+    }
+
+    /* RTLD_DEFAULT does not necessarily expose symbols from locally-loaded tweak
+       injection libraries. Search the images already loaded into this process. */
+    uint32_t imageCount = _dyld_image_count();
+    for (uint32_t i = imageCount; i > 0; i--) {
+        const char *imagePath = _dyld_get_image_name(i - 1);
+        if (!imagePath) continue;
+
+        BOOL looksLikeHookLibrary =
+            strstr(imagePath, "ElleKit") != NULL ||
+            strstr(imagePath, "ellekit") != NULL ||
+            strstr(imagePath, "Substrate") != NULL ||
+            strstr(imagePath, "substrate") != NULL ||
+            strstr(imagePath, "Substitute") != NULL ||
+            strstr(imagePath, "substitute") != NULL ||
+            strstr(imagePath, "libhooker") != NULL;
+        if (!looksLikeHookLibrary) continue;
+
+        void *handle = dlopen(imagePath, RTLD_LAZY | RTLD_NOLOAD);
+        if (!handle) continue;
+        symbol = dlsym(handle, "MSHookFunction");
+        if (symbol) {
+            if (resolvedImage) *resolvedImage = imagePath;
+            /* Keep the handle open: the resolved function must remain mapped. */
+            return symbol;
+        }
+    }
+
+    if (resolvedImage) *resolvedImage = NULL;
+    return NULL;
+}
+
+static BOOL ZVInstallAudioUnitRenderHook(void) {
+    if (ZVAudioUnitRenderHookInstalled && ZVOriginalAudioUnitRender) return YES;
+
     typedef void (*ZVMSHookFunction)(void *, void *, void **);
-    ZVMSHookFunction hooker = (ZVMSHookFunction)dlsym(RTLD_DEFAULT, "MSHookFunction");
+    const char *hookImage = NULL;
+    ZVMSHookFunction hooker = (ZVMSHookFunction)ZVResolveMSHookFunction(&hookImage);
     void *target = dlsym(RTLD_DEFAULT, "AudioUnitRender");
     if (!hooker || !target) {
         ZVLogVoiceEntryOnce(@"audiounit_render_hook_unavailable",
-                            @"AudioUnitRender hook unavailable (MSHookFunction=%d symbol=%d)",
-                            hooker != NULL, target != NULL);
+                            @"AudioUnitRender hook unavailable (MSHookFunction=%d symbol=%d image=%s)",
+                            hooker != NULL, target != NULL,
+                            hookImage ?: "not-found");
         return NO;
     }
 
     hooker(target, (void *)ZVAudioUnitRenderHook, (void **)&ZVOriginalAudioUnitRender);
     ZVAudioUnitRenderHookInstalled = (ZVOriginalAudioUnitRender != NULL);
     ZVWriteVoiceEntryLog([NSString stringWithFormat:
-        @"[ZolaCN][VoicePCM] AudioUnitRender hook installed=%d original=%p target=%p",
-        ZVAudioUnitRenderHookInstalled, ZVOriginalAudioUnitRender, target]);
+        @"[ZolaCN][VoicePCM] AudioUnitRender hook installed=%d original=%p target=%p provider=%s",
+        ZVAudioUnitRenderHookInstalled, ZVOriginalAudioUnitRender, target,
+        hookImage ?: "unknown"]);
     return ZVAudioUnitRenderHookInstalled;
+}
 }
 
 static void ZVCompletePendingVoicePack(BOOL success, NSString *reason) {
