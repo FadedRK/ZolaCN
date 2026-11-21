@@ -1456,12 +1456,11 @@ static void ZVRebindImage(const struct mach_header *header, intptr_t slide) {
             if (section->reserved1 > dysymtab->nindirectsyms) continue;
             uint64_t count = section->size / sizeof(void *);
             if (!ZVRangeInside(section->reserved1, count, dysymtab->nindirectsyms)) continue;
-            uint64_t sectionFileOffset = section->offset;
-            if (!ZVRangeInside(sectionFileOffset, section->size, linkedit->fileoff + linkedit->filesize + UINT32_MAX)) {
-                /* Section VM addresses are checked against their owning segment below. */
-                if (section->addr < seg->vmaddr || section->addr + section->size < section->addr ||
-                    section->addr + section->size > seg->vmaddr + seg->vmsize) continue;
-            }
+            if (section->addr < seg->vmaddr ||
+                section->addr + section->size < section->addr ||
+                seg->vmaddr + seg->vmsize < seg->vmaddr ||
+                section->addr + section->size > seg->vmaddr + seg->vmsize ||
+                section->size % sizeof(void *) != 0) continue;
             uintptr_t sectionAddress = (uintptr_t)(slide + (intptr_t)section->addr);
             vm_prot_t originalProtection = (vm_prot_t)seg->initprot;
             for (uint64_t k = 0; k < count; k++) {
