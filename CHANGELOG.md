@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.8] — 2026-11-21
+
+### Added
+- Add low-overhead AudioUnitRender diagnostics using atomic counters, including actual Bus 0/Bus 1 render calls, injected frame counts, tail-flush frames, output sample rate, output format, and AudioUnit status.
+- Add per-send hook preflight so voice packs are not marked as queued when AudioUnitRender or the native VoiceBoard long-press hook is unavailable.
+- Add bounded off-thread diagnostic snapshots to the existing Documents/zolacn_voice_diag.log file.
+
+### Fixed
+- Treat a completed upload callback without an UploadedVoiceLink as a failed send instead of reporting success.
+- Replace the misleading legacy AAC-ADTS success message with an explicit PCM diagnostic-state message.
+
+### Note
+- This is a diagnostic/stability release. It does not yet claim automatic one-tap sending; direct upload-session creation still requires runtime-confirmed Zalo call arguments and lifecycle data.
+
 ## [1.0.7] — 2026-11-16
 
 ### Added

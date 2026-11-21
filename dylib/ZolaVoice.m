@@ -58,6 +58,19 @@ static os_unfair_lock gZVRetiredPacketsLock = OS_UNFAIR_LOCK_INIT;
 static ZVPCMPacket *gZVRetiredPackets;
 static atomic_bool gZVReclaimScheduled = ATOMIC_VAR_INIT(false);
 
+/* Render diagnostics: the real-time callback only updates atomics; file logging is polled off-thread. */
+static atomic_uint_fast64_t gZVRenderCalls = ATOMIC_VAR_INIT(0);
+static atomic_uint_fast64_t gZVRenderBus0Calls = ATOMIC_VAR_INIT(0);
+static atomic_uint_fast64_t gZVRenderBus1Calls = ATOMIC_VAR_INIT(0);
+static atomic_uint_fast64_t gZVRenderInjectedCalls = ATOMIC_VAR_INIT(0);
+static atomic_uint_fast64_t gZVRenderInjectedFrames = ATOMIC_VAR_INIT(0);
+static atomic_uint_fast64_t gZVRenderTailCalls = ATOMIC_VAR_INIT(0);
+static atomic_uint_fast64_t gZVRenderTailFrames = ATOMIC_VAR_INIT(0);
+static atomic_uint_fast64_t gZVRenderFormatFailures = ATOMIC_VAR_INIT(0);
+static atomic_uint_fast64_t gZVRenderLastRateMilliHz = ATOMIC_VAR_INIT(0);
+static atomic_uint_fast64_t gZVRenderLastFormat = ATOMIC_VAR_INIT(0);
+static atomic_int gZVRenderLastStatus = ATOMIC_VAR_INIT(0);
+
 static uintptr_t gZVUploadViewModelPointer;
 static uintptr_t gZVUploadUploaderPointer;
 static uintptr_t gZVUploadConfigurationPointer;
@@ -1234,12 +1247,25 @@ static OSStatus ZVAudioUnitRenderHook(AudioUnit unit,
                                       UInt32 outputBus,
                                       UInt32 numberFrames,
                                       AudioBufferList *ioData) {
+    atomic_fetch_add_explicit(&gZVRenderCalls, 1, memory_order_relaxed);
+    if (outputBus == 0)
+        atomic_fetch_add_explicit(&gZVRenderBus0Calls, 1, memory_order_relaxed);
+    else if (outputBus == 1)
+        atomic_fetch_add_explicit(&gZVRenderBus1Calls, 1, memory_order_relaxed);
+
     ZVAudioUnitRenderFunction original = ZVOriginalAudioUnitRender;
-    if (!original) return kAudioUnitErr_Uninitialized;
+    if (!original) {
+        atomic_store_explicit(&gZVRenderLastStatus, kAudioUnitErr_Uninitialized, memory_order_relaxed);
+        return kAudioUnitErr_Uninitialized;
+    }
 
     // Preserve the real capture path first. Only the verified input bus is replaced.
     OSStatus status = original(unit, actionFlags, timeStamp, outputBus, numberFrames, ioData);
-    if (status != noErr || outputBus != 1 || !ioData || numberFrames == 0) return status;
+    if (status != noErr) {
+        atomic_store_explicit(&gZVRenderLastStatus, status, memory_order_relaxed);
+        return status;
+    }
+    if (outputBus != 1 || !ioData || numberFrames == 0) return status;
 
     ZVVoiceState state = (ZVVoiceState)atomic_load_explicit(&gZVVoiceState, memory_order_seq_cst);
     if (state != ZVVoiceStateInjecting && state != ZVVoiceStateTailFlush) return status;
@@ -1260,13 +1286,25 @@ static OSStatus ZVAudioUnitRenderHook(AudioUnit unit,
     if (!ZVDescribeRenderFormat(&outputFormat, &sampleBytes, &isFloat, &nonInterleaved) ||
         !ZVValidateRenderBuffers(ioData, &outputFormat, numberFrames,
                                  sampleBytes, nonInterleaved)) {
+        atomic_fetch_add_explicit(&gZVRenderFormatFailures, 1, memory_order_relaxed);
         ZVMarkRenderFailed(-7001);
         return status;
     }
 
+    atomic_store_explicit(&gZVRenderLastRateMilliHz,
+                          (uint64_t)llround(outputFormat.mSampleRate * 1000.0),
+                          memory_order_relaxed);
+    uint64_t formatCode = ((uint64_t)outputFormat.mBitsPerChannel << 32) |
+                          ((uint64_t)outputFormat.mChannelsPerFrame << 16) |
+                          (uint64_t)(nonInterleaved ? 1 : 0) |
+                          (uint64_t)(isFloat ? 2 : 0);
+    atomic_store_explicit(&gZVRenderLastFormat, formatCode, memory_order_relaxed);
+
     if (state == ZVVoiceStateTailFlush) {
         ZVFillRenderSilence(ioData, &outputFormat, numberFrames,
                             sampleBytes, isFloat, nonInterleaved);
+        atomic_fetch_add_explicit(&gZVRenderTailCalls, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&gZVRenderTailFrames, numberFrames, memory_order_relaxed);
         ZVConsumeTailFrames(numberFrames);
         return status;
     }
@@ -1330,6 +1368,8 @@ static OSStatus ZVAudioUnitRenderHook(AudioUnit unit,
         if (alreadySilent) ZVConsumeTailFrames(alreadySilent);
     }
 
+    atomic_fetch_add_explicit(&gZVRenderInjectedCalls, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&gZVRenderInjectedFrames, numberFrames, memory_order_relaxed);
     atomic_fetch_sub_explicit(&gZVRenderReaders, 1, memory_order_seq_cst);
     return status;
 }
@@ -1384,6 +1424,45 @@ static void ZVScheduleUploadTimeout(NSUInteger generation) {
                        atomic_load_explicit(&gZVVoiceState, memory_order_seq_cst) == ZVVoiceStateUploading;
         os_unfair_lock_unlock(&gZVStateLock);
         if (expired) ZVCompletePendingVoicePack(NO, @"upload_timeout");
+    });
+}
+
+static void ZVScheduleRenderDiagnostics(NSUInteger generation, NSUInteger attempt) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)NSEC_PER_SEC),
+                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        os_unfair_lock_lock(&gZVStateLock);
+        BOOL pending = gHasPendingVoicePack && gPendingVoiceGeneration == generation;
+        os_unfair_lock_unlock(&gZVStateLock);
+        if (!pending) return;
+
+        ZVVoiceState state = (ZVVoiceState)atomic_load_explicit(&gZVVoiceState, memory_order_seq_cst);
+        uint64_t calls = atomic_load_explicit(&gZVRenderCalls, memory_order_relaxed);
+        uint64_t bus0 = atomic_load_explicit(&gZVRenderBus0Calls, memory_order_relaxed);
+        uint64_t bus1 = atomic_load_explicit(&gZVRenderBus1Calls, memory_order_relaxed);
+        uint64_t injected = atomic_load_explicit(&gZVRenderInjectedCalls, memory_order_relaxed);
+        uint64_t injectedFrames = atomic_load_explicit(&gZVRenderInjectedFrames, memory_order_relaxed);
+        uint64_t tailCalls = atomic_load_explicit(&gZVRenderTailCalls, memory_order_relaxed);
+        uint64_t tailFrames = atomic_load_explicit(&gZVRenderTailFrames, memory_order_relaxed);
+        uint64_t formatFailures = atomic_load_explicit(&gZVRenderFormatFailures, memory_order_relaxed);
+        uint64_t rateMilliHz = atomic_load_explicit(&gZVRenderLastRateMilliHz, memory_order_relaxed);
+        uint64_t formatCode = atomic_load_explicit(&gZVRenderLastFormat, memory_order_relaxed);
+        int renderStatus = atomic_load_explicit(&gZVRenderLastStatus, memory_order_relaxed);
+        int renderFailure = atomic_load_explicit(&gZVRenderFailureCode, memory_order_relaxed);
+
+        ZVWriteVoiceEntryLog([NSString stringWithFormat:
+            @"[ZolaCN][VoicePCM][DIAG] generation=%lu attempt=%lu state=%@ hooks={render:%d,longPress:%d,willChunk:%d,success:%d,failure:%d} render={calls:%llu,bus0:%llu,bus1:%llu,injectedCalls:%llu,injectedFrames:%llu,tailCalls:%llu,tailFrames:%llu,formatFailures:%llu,rateHz:%.3f,formatCode:0x%llx,lastStatus:%d,failureCode:%d}",
+            (unsigned long)generation, (unsigned long)attempt, ZVVoiceStateName(state),
+            ZVAudioUnitRenderHookInstalled, ZVVoiceBoardLongPressHookInstalled,
+            ZVVoiceUploadWillChunkHookInstalled, ZVVoiceUploadSuccessHookInstalled,
+            ZVVoiceUploadFailureHookInstalled,
+            (unsigned long long)calls, (unsigned long long)bus0, (unsigned long long)bus1,
+            (unsigned long long)injected, (unsigned long long)injectedFrames,
+            (unsigned long long)tailCalls, (unsigned long long)tailFrames,
+            (unsigned long long)formatFailures, (double)rateMilliHz / 1000.0,
+            (unsigned long long)formatCode, renderStatus, renderFailure]);
+
+        if (attempt < 300)
+            ZVScheduleRenderDiagnostics(generation, attempt + 1);
     });
 }
 
@@ -1442,7 +1521,8 @@ static void ZVUploadDidFinish(id self, SEL cmd, id uploader,
     if (original)
         ((void (*)(id, SEL, id, id, id))original)(self, cmd, uploader, sessionConfiguration, fileLink);
     if (matches)
-        ZVCompletePendingVoicePack(YES, fileLink ? @"view_model_upload_success" : @"view_model_upload_finished_without_link");
+        ZVCompletePendingVoicePack(fileLink != nil,
+            fileLink ? @"view_model_upload_success" : @"view_model_upload_finished_without_link");
 }
 
 static void ZVUploadDidFail(id self, SEL cmd, id uploader,
@@ -1531,6 +1611,7 @@ static void ZVVoiceBoardLongPress(id self, SEL cmd, id recognizer) {
 
     BOOL clearAfterOriginal = NO;
     if (gestureState == UIGestureRecognizerStateBegan) {
+        ZVWriteVoiceEntryLog(@"[ZolaCN][VoicePCM][DIAG] gesture=Began");
         int expected = ZVVoiceStatePrepared;
         BOOL started = atomic_compare_exchange_strong_explicit(
             &gZVVoiceState, &expected, ZVVoiceStateInjecting,
@@ -1542,6 +1623,7 @@ static void ZVVoiceBoardLongPress(id self, SEL cmd, id recognizer) {
             ZVWriteVoiceEntryLog(@"[ZolaCN][VoicePCM] native microphone began; PCM injection enabled on bus 1");
         }
     } else if (gestureState == UIGestureRecognizerStateEnded) {
+        ZVWriteVoiceEntryLog(@"[ZolaCN][VoicePCM][DIAG] gesture=Ended");
         ZVVoiceState state = (ZVVoiceState)atomic_load_explicit(&gZVVoiceState, memory_order_seq_cst);
         if (state == ZVVoiceStateInjecting) {
             if (ZVPacketPlaybackComplete()) {
@@ -1565,6 +1647,9 @@ static void ZVVoiceBoardLongPress(id self, SEL cmd, id recognizer) {
         }
     } else if (gestureState == UIGestureRecognizerStateCancelled ||
                gestureState == UIGestureRecognizerStateFailed) {
+        ZVWriteVoiceEntryLog([NSString stringWithFormat:
+            @"[ZolaCN][VoicePCM][DIAG] gesture=%@",
+            gestureState == UIGestureRecognizerStateCancelled ? @"Cancelled" : @"Failed"]);
         atomic_store_explicit(&gZVVoiceState, ZVVoiceStateFailed, memory_order_seq_cst);
         clearAfterOriginal = YES;
     }
@@ -1593,6 +1678,25 @@ static BOOL ZVSendVoicePackFile(NSURL *sourceURL,
         return NO;
     }
 
+    /* The send action is rejected unless both native entry points are actually hooked. */
+    ZVInstallAudioUnitRenderHook();
+    if (!ZVAudioUnitRenderHookInstalled || !ZVOriginalAudioUnitRender) {
+        ZVWriteVoiceEntryLog(@"[ZolaCN][VoicePCM][DIAG] preflight_failed reason=AudioUnitRender_hook_not_installed");
+        if (errorText) *errorText = @"AudioUnitRender Hook 尚未安装，语音没有排队。请重启 Zalo 后重试。";
+        return NO;
+    }
+    if (!ZVVoiceBoardLongPressHookInstalled || !ZVOriginalVoiceBoardLongPress) {
+        ZVWriteVoiceEntryLog(@"[ZolaCN][VoicePCM][DIAG] preflight_failed reason=VoiceBoard_long_press_hook_not_installed");
+        if (errorText) *errorText = @"Zalo 原生录音入口尚未就绪，语音没有排队。请先进入聊天页面，等待页面加载后再试。";
+        return NO;
+    }
+
+    ZVWriteVoiceEntryLog([NSString stringWithFormat:
+        @"[ZolaCN][VoicePCM][DIAG] preflight_pass render=%d longPress=%d willChunk=%d success=%d failure=%d",
+        ZVAudioUnitRenderHookInstalled, ZVVoiceBoardLongPressHookInstalled,
+        ZVVoiceUploadWillChunkHookInstalled, ZVVoiceUploadSuccessHookInstalled,
+        ZVVoiceUploadFailureHookInstalled]);
+
     int expectedState = ZVVoiceStateIdle;
     if (!atomic_compare_exchange_strong_explicit(
             &gZVVoiceState, &expectedState, ZVVoiceStatePrepared,
@@ -1613,6 +1717,18 @@ static BOOL ZVSendVoicePackFile(NSURL *sourceURL,
     gZVUploadConfigurationPointer = 0;
     gZVUploadGeneration = 0;
     os_unfair_lock_unlock(&gZVStateLock);
+
+    atomic_store_explicit(&gZVRenderCalls, 0, memory_order_relaxed);
+    atomic_store_explicit(&gZVRenderBus0Calls, 0, memory_order_relaxed);
+    atomic_store_explicit(&gZVRenderBus1Calls, 0, memory_order_relaxed);
+    atomic_store_explicit(&gZVRenderInjectedCalls, 0, memory_order_relaxed);
+    atomic_store_explicit(&gZVRenderInjectedFrames, 0, memory_order_relaxed);
+    atomic_store_explicit(&gZVRenderTailCalls, 0, memory_order_relaxed);
+    atomic_store_explicit(&gZVRenderTailFrames, 0, memory_order_relaxed);
+    atomic_store_explicit(&gZVRenderFormatFailures, 0, memory_order_relaxed);
+    atomic_store_explicit(&gZVRenderLastRateMilliHz, 0, memory_order_relaxed);
+    atomic_store_explicit(&gZVRenderLastFormat, 0, memory_order_relaxed);
+    atomic_store_explicit(&gZVRenderLastStatus, 0, memory_order_relaxed);
 
     NSTimeInterval duration = 0;
     NSString *decodeError = nil;
@@ -1657,6 +1773,7 @@ static BOOL ZVSendVoicePackFile(NSURL *sourceURL,
         @"[ZolaCN][VoicePCM] pending_ready generation=%lu duration=%.6f pcm_frames=%llu input_rate=44100 channels=1 format=float32",
         (unsigned long)generation, duration, (unsigned long long)packet->frameCount]);
     ZVWriteVoiceEntryLog(@"[ZolaCN][VoicePCM] action_required=hold_native_zalo_microphone_until_playback_finishes_then_release");
+    ZVScheduleRenderDiagnostics(generation, 0);
     return YES;
 }
 
@@ -2213,7 +2330,7 @@ void ZVInstall(void) {
             NSString *errorText = nil;
             if (ZVSendVoicePackFile(url, _voiceSendController, &errorText)) {
                 UIAlertController *result = [UIAlertController alertControllerWithTitle:@"语音包已排队"
-                                                                                 message:@"已转为 44.1kHz 单声道 AAC-ADTS。请在当前聊天按住 Zalo 原生麦克风并松开一次；插件会在新录音文件创建时替换音频，并等待原生上传完成。"
+                                                                                 message:@"PCM 已准备并通过原生 Hook 预检。当前诊断版仍需在当前聊天按住 Zalo 原生麦克风，等待 PCM 播放和尾帧完成后再松开；是否真正注入及上传会写入 Documents/zolacn_voice_diag.log。此提示不代表消息已经发送。"
                                                                           preferredStyle:UIAlertControllerStyleAlert];
                 [result addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
                 [self presentViewController:result animated:YES completion:nil];
