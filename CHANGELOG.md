@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.11] — 2026-11-21
+
+### Added
+- Add explicit AudioUnitRender hook installation diagnostics, including selected level, target/original/replacement addresses, and fishhook-rebound image names.
+- Add lightweight runtime entry probes for AudioQueueNewInput, AVAudioNode installTap, and AudioUnitSetProperty(SetInputCallback), recording invocation counts and audio format metadata without modifying captured audio.
+
+### Build
+- Preserve arm64e-only dylib release output.
+
 ## [1.0.10] — 2026-11-21
 
 ### Fixed

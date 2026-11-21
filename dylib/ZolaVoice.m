@@ -92,6 +92,18 @@ typedef OSStatus (*ZVAudioUnitRenderFunction)(
     UInt32, UInt32, AudioBufferList *);
 static ZVAudioUnitRenderFunction ZVOriginalAudioUnitRender;
 static BOOL ZVAudioUnitRenderHookInstalled;
+typedef OSStatus (*ZVAudioQueueNewInputFunction)(const AudioStreamBasicDescription *, AudioQueueInputCallback, void *, CFRunLoopRef, CFStringRef, UInt32, AudioQueueRef *);
+typedef OSStatus (*ZVAudioUnitSetPropertyFunction)(AudioUnit, AudioUnitPropertyID, AudioUnitScope, AudioUnitElement, const void *, UInt32);
+static ZVAudioQueueNewInputFunction ZVOriginalAudioQueueNewInput;
+static ZVAudioUnitSetPropertyFunction ZVOriginalAudioUnitSetProperty;
+static atomic_uint_fast64_t gZVAudioQueueNewInputCalls = ATOMIC_VAR_INIT(0);
+static atomic_uint_fast64_t gZVAudioUnitSetInputCallbackCalls = ATOMIC_VAR_INIT(0);
+static atomic_uint_fast64_t gZVInstallTapCalls = ATOMIC_VAR_INIT(0);
+static IMP gZVOriginalInstallTap;
+static BOOL gZVInstallTapHookInstalled;
+static BOOL gZVAudioQueueHookInstalled;
+static BOOL gZVAudioUnitSetPropertyHookInstalled;
+static NSMutableSet<NSString *> *gZVFishhookImageNames;
 
 #define ZV_PCM_SOURCE_RATE 44100.0
 #define ZV_PCM_MAX_SECONDS 300.0
@@ -1483,9 +1495,25 @@ static void ZVRebindImage(const struct mach_header *header, intptr_t slide) {
             }
         }
     }
-    if (imageChanged) atomic_fetch_add_explicit(&gZVFishhookImageCount, 1, memory_order_relaxed);
+    if (imageChanged) { atomic_fetch_add_explicit(&gZVFishhookImageCount, 1, memory_order_relaxed); ZVRecordFishhookImage(header); }
 }
 
+static NSString *ZVImageNameForHeader(const struct mach_header *header) {
+    uint32_t count = _dyld_image_count();
+    for (uint32_t i = 0; i < count; i++) if (_dyld_get_image_header(i) == header) {
+        const char *name = _dyld_get_image_name(i);
+        return name ? [NSString stringWithUTF8String:name] : @"<unnamed-image>";
+    }
+    return @"<image-name-unavailable>";
+}
+static void ZVRecordFishhookImage(const struct mach_header *header) {
+    NSString *name = ZVImageNameForHeader(header);
+    @synchronized ([NSMutableSet class]) {
+        if (!gZVFishhookImageNames) gZVFishhookImageNames = [NSMutableSet set];
+        [gZVFishhookImageNames addObject:name ?: @"<unnamed-image>"];
+    }
+    ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][VoicePCM] fishhook rebound image=%@", name]);
+}
 static void ZVFishhookAddImage(const struct mach_header *header, intptr_t slide) {
     ZVRebindImage(header, slide);
 }
@@ -1526,8 +1554,8 @@ static BOOL ZVInstallAudioUnitRenderHook(void) {
             gZVAudioUnitHookMethod = (provider && strcmp(provider, "RTLD_DEFAULT") == 0) ?
                 "level1-dlsym" : "level2-dlopen";
             ZVWriteVoiceEntryLog([NSString stringWithFormat:
-                @"[ZolaCN][VoicePCM] AudioUnitRender hook installed=1 method=%s provider=%s target=%p original=%p fishhook_images=0",
-                gZVAudioUnitHookMethod, provider ?: "unknown", target, ZVOriginalAudioUnitRender]);
+                @"[ZolaCN][VoicePCM] AudioUnitRender hook installed=1 method=%s provider=%s target=%p original=%p replacement=%p fishhook_images=0",
+                gZVAudioUnitHookMethod, provider ?: "unknown", target, ZVOriginalAudioUnitRender, ZVAudioUnitRenderHook]);
             return YES;
         }
     }
@@ -1541,13 +1569,61 @@ static BOOL ZVInstallAudioUnitRenderHook(void) {
         ZVAudioUnitRenderHookInstalled = (count > 0 && ZVOriginalAudioUnitRender != NULL);
         gZVAudioUnitHookMethod = "level3-fishhook";
         ZVWriteVoiceEntryLog([NSString stringWithFormat:
-            @"[ZolaCN][VoicePCM] AudioUnitRender hook installed=%d method=%s fishhook_images=%u target=%p original=%p",
-            ZVAudioUnitRenderHookInstalled, gZVAudioUnitHookMethod, count, target, ZVOriginalAudioUnitRender]);
+            @"[ZolaCN][VoicePCM] AudioUnitRender hook installed=%d method=%s fishhook_images=%u target=%p original=%p replacement=%p images=%@",
+            ZVAudioUnitRenderHookInstalled, gZVAudioUnitHookMethod, count, target, ZVOriginalAudioUnitRender, ZVAudioUnitRenderHook,
+            [[gZVFishhookImageNames allObjects] componentsJoinedByString:@";"] ?: @"none"]);
         return ZVAudioUnitRenderHookInstalled;
     }
 
     ZVWriteVoiceEntryLog(@"[ZolaCN][VoicePCM] AudioUnitRender hook unavailable method=none target_symbol=0 fishhook_images=0");
     return NO;
+}
+
+static void ZVLogAudioStreamDescription(const char *source, const AudioStreamBasicDescription *format) {
+    if (!format) { ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][AudioProbe] %s format=NULL", source ?: "unknown"]); return; }
+    ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][AudioProbe] %s format={mFormatID:0x%08x,mSampleRate:%.3f,mChannelsPerFrame:%u,mBitsPerChannel:%u}", source ?: "unknown", (unsigned int)format->mFormatID, format->mSampleRate, (unsigned int)format->mChannelsPerFrame, (unsigned int)format->mBitsPerChannel]);
+}
+static OSStatus ZVAudioQueueNewInputHook(const AudioStreamBasicDescription *format, AudioQueueInputCallback callback, void *userData, CFRunLoopRef runLoop, CFStringRef runLoopMode, UInt32 flags, AudioQueueRef *outQueue) {
+    atomic_fetch_add_explicit(&gZVAudioQueueNewInputCalls, 1, memory_order_relaxed);
+    ZVLogAudioStreamDescription("AudioQueueNewInput", format);
+    ZVWriteVoiceEntryLog(@"[ZolaCN][AudioProbe] AudioQueueNewInput invoked");
+    return ZVOriginalAudioQueueNewInput ? ZVOriginalAudioQueueNewInput(format, callback, userData, runLoop, runLoopMode, flags, outQueue) : kAudio_ParamError;
+}
+static OSStatus ZVAudioUnitSetPropertyHook(AudioUnit unit, AudioUnitPropertyID propertyID, AudioUnitScope scope, AudioUnitElement element, const void *data, UInt32 dataSize) {
+    if (propertyID == kAudioOutputUnitProperty_SetInputCallback) {
+        atomic_fetch_add_explicit(&gZVAudioUnitSetInputCallbackCalls, 1, memory_order_relaxed);
+        ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][AudioProbe] AudioUnitSetProperty SetInputCallback hit unit=%p scope=%u element=%u dataSize=%u", unit, (unsigned int)scope, (unsigned int)element, (unsigned int)dataSize]);
+    }
+    return ZVOriginalAudioUnitSetProperty ? ZVOriginalAudioUnitSetProperty(unit, propertyID, scope, element, data, dataSize) : kAudio_ParamError;
+}
+static void ZVInstallTapOnBusHook(id self, SEL command, AVAudioNodeBus bus, AVAudioFrameCount bufferSize, AVAudioFormat *format, AVAudioNodeTapBlock tapBlock) {
+    atomic_fetch_add_explicit(&gZVInstallTapCalls, 1, memory_order_relaxed);
+    ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][AudioProbe] %@ installTap hit bus=%u bufferSize=%u format={sampleRate:%.3f,channels:%u,commonFormat:%ld,interleaved:%d} block=%d", NSStringFromClass([self class]), (unsigned int)bus, (unsigned int)bufferSize, format.sampleRate, (unsigned int)format.channelCount, (long)format.commonFormat, format.isInterleaved, tapBlock != nil]);
+    if (gZVOriginalInstallTap) ((void (*)(id, SEL, AVAudioNodeBus, AVAudioFrameCount, AVAudioFormat *, AVAudioNodeTapBlock))gZVOriginalInstallTap)(self, command, bus, bufferSize, format, tapBlock);
+}
+static BOOL ZVInstallAudioEntryProbes(void) {
+    const char *provider = NULL;
+    typedef void (*ZVNativeHookFunction)(void *, void *, void **);
+    ZVNativeHookFunction hooker = (ZVNativeHookFunction)ZVResolveHookSymbol("MSHookFunction", &provider);
+    if (!hooker) hooker = (ZVNativeHookFunction)ZVResolveHookSymbol("SubHookFunction", &provider);
+    if (!ZVAudioQueueHookInstalled) {
+        void *target = dlsym(RTLD_DEFAULT, "AudioQueueNewInput");
+        if (target && hooker) { hooker(target, (void *)ZVAudioQueueNewInputHook, (void **)&ZVOriginalAudioQueueNewInput); ZVAudioQueueHookInstalled = ZVOriginalAudioQueueNewInput != NULL; }
+        ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][AudioProbe] AudioQueueNewInput hook=%d target=%p original=%p provider=%s", ZVAudioQueueHookInstalled, target, ZVOriginalAudioQueueNewInput, provider ?: "unknown"]);
+    }
+    if (!ZVAudioUnitSetPropertyHookInstalled) {
+        void *target = dlsym(RTLD_DEFAULT, "AudioUnitSetProperty");
+        if (target && hooker) { hooker(target, (void *)ZVAudioUnitSetPropertyHook, (void **)&ZVOriginalAudioUnitSetProperty); ZVAudioUnitSetPropertyHookInstalled = ZVOriginalAudioUnitSetProperty != NULL; }
+        ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][AudioProbe] AudioUnitSetProperty hook=%d target=%p original=%p provider=%s", ZVAudioUnitSetPropertyHookInstalled, target, ZVOriginalAudioUnitSetProperty, provider ?: "unknown"]);
+    }
+    if (!ZVInstallTapHookInstalled) {
+        SEL selector = @selector(installTapOnBus:bufferSize:format:block:);
+        Method method = class_getInstanceMethod(AVAudioNode.class, selector);
+        if (method) gZVOriginalInstallTap = method_setImplementation(method, (IMP)ZVInstallTapOnBusHook);
+        ZVInstallTapHookInstalled = gZVOriginalInstallTap != NULL;
+        ZVWriteVoiceEntryLog([NSString stringWithFormat:@"[ZolaCN][AudioProbe] AVAudioNode installTap hook=%d original=%p", ZVInstallTapHookInstalled, gZVOriginalInstallTap]);
+    }
+    return ZVAudioQueueHookInstalled || ZVAudioUnitSetPropertyHookInstalled || ZVInstallTapHookInstalled;
 }
 
 static void ZVCompletePendingVoicePack(BOOL success, NSString *reason) {
@@ -1603,9 +1679,12 @@ static void ZVScheduleRenderDiagnostics(NSUInteger generation, NSUInteger attemp
         uint64_t formatCode = atomic_load_explicit(&gZVRenderLastFormat, memory_order_relaxed);
         int renderStatus = atomic_load_explicit(&gZVRenderLastStatus, memory_order_relaxed);
         int renderFailure = atomic_load_explicit(&gZVRenderFailureCode, memory_order_relaxed);
+        uint64_t audioQueueCalls = atomic_load_explicit(&gZVAudioQueueNewInputCalls, memory_order_relaxed);
+        uint64_t setInputCallbackCalls = atomic_load_explicit(&gZVAudioUnitSetInputCallbackCalls, memory_order_relaxed);
+        uint64_t installTapCalls = atomic_load_explicit(&gZVInstallTapCalls, memory_order_relaxed);
 
         ZVWriteVoiceEntryLog([NSString stringWithFormat:
-            @"[ZolaCN][VoicePCM][DIAG] generation=%lu attempt=%lu state=%@ hooks={render:%d,longPress:%d,willChunk:%d,success:%d,failure:%d} render={calls:%llu,bus0:%llu,bus1:%llu,injectedCalls:%llu,injectedFrames:%llu,tailCalls:%llu,tailFrames:%llu,formatFailures:%llu,rateHz:%.3f,formatCode:0x%llx,lastStatus:%d,failureCode:%d}",
+            @"[ZolaCN][VoicePCM][DIAG] generation=%lu attempt=%lu state=%@ hooks={render:%d,longPress:%d,willChunk:%d,success:%d,failure:%d} render={calls:%llu,bus0:%llu,bus1:%llu,injectedCalls:%llu,injectedFrames:%llu,tailCalls:%llu,tailFrames:%llu,formatFailures:%llu,rateHz:%.3f,formatCode:0x%llx,lastStatus:%d,failureCode:%d} audioEntry={AudioQueueNewInput:%llu,AudioUnitSetInputCallback:%llu,installTap:%llu}",
             (unsigned long)generation, (unsigned long)attempt, ZVVoiceStateName(state),
             ZVAudioUnitRenderHookInstalled, ZVVoiceBoardLongPressHookInstalled,
             ZVVoiceUploadWillChunkHookInstalled, ZVVoiceUploadSuccessHookInstalled,
@@ -1614,7 +1693,9 @@ static void ZVScheduleRenderDiagnostics(NSUInteger generation, NSUInteger attemp
             (unsigned long long)injected, (unsigned long long)injectedFrames,
             (unsigned long long)tailCalls, (unsigned long long)tailFrames,
             (unsigned long long)formatFailures, (double)rateMilliHz / 1000.0,
-            (unsigned long long)formatCode, renderStatus, renderFailure]);
+            (unsigned long long)formatCode, renderStatus, renderFailure,
+             (unsigned long long)audioQueueCalls, (unsigned long long)setInputCallbackCalls,
+             (unsigned long long)installTapCalls]);
 
         if (attempt < 300)
             ZVScheduleRenderDiagnostics(generation, attempt + 1);
@@ -2095,6 +2176,7 @@ static BOOL ZVInstallRuntimeHooksOnce(void) {
     Class boardClass = NSClassFromString(@"CommFeatureBusiness.VoiceBoardView");
     Class viewModelClass = NSClassFromString(@"CommFeatureBusiness.VoiceBoardViewModel");
 
+    ZVInstallAudioEntryProbes();
     ZVInstallAudioUnitRenderHook();
 
     if (gridClass && !ZVGridLayoutHookInstalled) {
